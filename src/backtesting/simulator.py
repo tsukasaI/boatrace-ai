@@ -21,6 +21,7 @@ from src.models.train import BoatracePredictor
 from src.models.predictor import RacePredictor, ExactaBet
 from src.models.features import FeatureEngineering, get_feature_columns
 from src.backtesting.metrics import calculate_metrics, BacktestMetrics
+from src.backtesting.synthetic_odds import SyntheticOddsGenerator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,6 +78,7 @@ class BacktestSimulator:
         ev_threshold: float = 1.0,
         stake: int = 100,
         max_bets_per_race: int = 3,
+        use_synthetic_odds: bool = False,
     ):
         """
         Args:
@@ -84,12 +86,15 @@ class BacktestSimulator:
             ev_threshold: 期待値のしきい値
             stake: 1回あたりの賭け金（円）
             max_bets_per_race: レースあたりの最大賭け数
+            use_synthetic_odds: 合成オッズを使用するか
         """
         self.predictor = RacePredictor(model)
         self.ev_threshold = ev_threshold
         self.stake = stake
         self.max_bets_per_race = max_bets_per_race
         self.feature_eng = FeatureEngineering()
+        self.use_synthetic_odds = use_synthetic_odds
+        self.synthetic_odds_gen = SyntheticOddsGenerator() if use_synthetic_odds else None
 
     def load_data(
         self,
@@ -175,19 +180,24 @@ class BacktestSimulator:
             actual_second = int(second_place["boat_no"].values[0])
 
             # オッズを取得
-            race_payouts = payouts_df[
-                (payouts_df["date"] == date) &
-                (payouts_df["stadium_code"] == stadium) &
-                (payouts_df["race_no"] == race_no) &
-                (payouts_df["bet_type"] == "exacta")
-            ]
-            if len(race_payouts) == 0:
-                continue
+            if self.use_synthetic_odds:
+                # 合成オッズを使用
+                odds = self.synthetic_odds_gen.get_all_odds()
+            else:
+                # 実オッズを使用（払戻データから）
+                race_payouts = payouts_df[
+                    (payouts_df["date"] == date) &
+                    (payouts_df["stadium_code"] == stadium) &
+                    (payouts_df["race_no"] == race_no) &
+                    (payouts_df["bet_type"] == "exacta")
+                ]
+                if len(race_payouts) == 0:
+                    continue
 
-            # オッズ辞書を作成
-            odds = {}
-            for _, row in race_payouts.iterrows():
-                odds[(int(row["first"]), int(row["second"]))] = row["odds"]
+                # オッズ辞書を作成
+                odds = {}
+                for _, row in race_payouts.iterrows():
+                    odds[(int(row["first"]), int(row["second"]))] = row["odds"]
 
             # 特徴量を生成
             features = self.feature_eng.create_base_features(race_df)
@@ -262,6 +272,7 @@ class BacktestSimulator:
         print(f"EV Threshold: {self.ev_threshold}")
         print(f"Stake per bet: ¥{self.stake}")
         print(f"Max bets per race: {self.max_bets_per_race}")
+        print(f"Odds type: {'Synthetic' if self.use_synthetic_odds else 'Real'}")
         print("-" * 60)
         print(f"Total races: {result.total_races}")
         print(f"Races with bets: {result.races_with_bets}")
@@ -302,6 +313,10 @@ def main():
         "--all-data", action="store_true",
         help="Use all data, not just test set"
     )
+    parser.add_argument(
+        "--synthetic-odds", action="store_true",
+        help="Use synthetic odds based on historical rates"
+    )
     args = parser.parse_args()
 
     # モデル読み込み
@@ -320,7 +335,11 @@ def main():
         ev_threshold=args.threshold,
         stake=args.stake,
         max_bets_per_race=args.max_bets,
+        use_synthetic_odds=args.synthetic_odds,
     )
+
+    if args.synthetic_odds:
+        logger.info("Using synthetic odds based on historical rates")
 
     # データ読み込み
     logger.info("Loading data...")
