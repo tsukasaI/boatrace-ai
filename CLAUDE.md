@@ -60,6 +60,10 @@ boatrace-ai/
 │   │   ├── core/                # Core business logic
 │   │   │   ├── mod.rs
 │   │   │   └── kelly.rs         # Kelly criterion bet sizing
+│   │   ├── data/                # Data loading modules
+│   │   │   ├── mod.rs
+│   │   │   ├── csv_loader.rs    # Load CSV files with polars
+│   │   │   └── odds_loader.rs   # Load scraped odds JSON
 │   │   ├── models.rs            # Request/response types
 │   │   ├── predictor.rs         # ONNX inference + exacta/trifecta
 │   │   ├── error.rs             # Error types and validation
@@ -216,11 +220,22 @@ cd rust-api
 # Run API server
 cargo run --bin boatrace-api
 
-# Run CLI
+# Run CLI - List races
+cargo run --bin boatrace-cli -- --data-dir ../data/processed list -d 20240115
+
+# Run CLI - Predict race
+cargo run --bin boatrace-cli -- --data-dir ../data/processed predict -d 20240115 -s 23 -r 1
+
+# With trifecta and custom Kelly settings
+cargo run --bin boatrace-cli -- --data-dir ../data/processed --odds-dir ../data/odds \
+  predict -d 20240115 -s 23 -r 1 --trifecta --threshold 1.1 --kelly 0.25
+
+# Interactive mode
+cargo run --bin boatrace-cli -- --data-dir ../data/processed -i
+
+# Show help
 cargo run --bin boatrace-cli -- --help
-cargo run --bin boatrace-cli -- predict -d 20241230 -s 23 -r 1
-cargo run --bin boatrace-cli -- predict -d 20241230 -s 23 -r 1 --trifecta
-cargo run --bin boatrace-cli -- list -d 20241230
+cargo run --bin boatrace-cli -- predict --help
 
 # Build with specific features
 cargo build --features api        # API only
