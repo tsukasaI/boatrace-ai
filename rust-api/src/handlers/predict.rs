@@ -1,9 +1,14 @@
 use actix_web::{web, HttpResponse, Responder};
-use crate::models::{PredictRequest, PredictResponse, ExactaPrediction, ErrorResponse};
-use crate::predictor::Predictor;
+use std::sync::Arc;
+
+use crate::models::{ErrorResponse, ExactaPrediction, PredictRequest, PredictResponse};
+use crate::AppState;
 
 /// Predict race outcome
-pub async fn predict_race(req: web::Json<PredictRequest>) -> impl Responder {
+pub async fn predict_race(
+    state: web::Data<Arc<AppState>>,
+    req: web::Json<PredictRequest>,
+) -> impl Responder {
     // Validate request
     if req.entries.len() != 6 {
         return HttpResponse::BadRequest().json(ErrorResponse {
@@ -12,17 +17,23 @@ pub async fn predict_race(req: web::Json<PredictRequest>) -> impl Responder {
         });
     }
 
-    // Get predictions
-    let predictor = Predictor::new();
-    let position_probs = predictor.predict_positions(&req.entries);
-
-    // Calculate exacta probabilities
-    let mut exacta_predictions = predictor.calculate_exacta_probs(&position_probs);
+    // Get predictions using ONNX model or fallback
+    let (position_probs, mut exacta_predictions) = if let Some(ref predictor_mutex) = state.predictor {
+        let mut predictor = predictor_mutex.lock().unwrap();
+        let pos_probs = predictor.predict_positions(&req.entries);
+        let exacta_probs = predictor.calculate_exacta_probs(&pos_probs);
+        (pos_probs, exacta_probs)
+    } else {
+        let pos_probs = state.fallback_predictor.predict_positions(&req.entries);
+        let exacta_probs = state.fallback_predictor.calculate_exacta_probs(&pos_probs);
+        (pos_probs, exacta_probs)
+    };
 
     // Add odds and EV if provided
     if let Some(ref odds_data) = req.odds {
         for pred in &mut exacta_predictions {
-            if let Some(odds) = odds_data.iter()
+            if let Some(odds) = odds_data
+                .iter()
                 .find(|o| o.first == pred.first && o.second == pred.second)
             {
                 pred.odds = Some(odds.odds);
@@ -52,7 +63,10 @@ pub async fn predict_race(req: web::Json<PredictRequest>) -> impl Responder {
 }
 
 /// Predict exacta probabilities only
-pub async fn predict_exacta(req: web::Json<PredictRequest>) -> impl Responder {
+pub async fn predict_exacta(
+    state: web::Data<Arc<AppState>>,
+    req: web::Json<PredictRequest>,
+) -> impl Responder {
     if req.entries.len() != 6 {
         return HttpResponse::BadRequest().json(ErrorResponse {
             error: "invalid_request".to_string(),
@@ -60,14 +74,24 @@ pub async fn predict_exacta(req: web::Json<PredictRequest>) -> impl Responder {
         });
     }
 
-    let predictor = Predictor::new();
-    let position_probs = predictor.predict_positions(&req.entries);
-    let mut exacta_predictions = predictor.calculate_exacta_probs(&position_probs);
+    // Get predictions using ONNX model or fallback
+    let (position_probs, mut exacta_predictions) = if let Some(ref predictor_mutex) = state.predictor {
+        let mut predictor = predictor_mutex.lock().unwrap();
+        let pos_probs = predictor.predict_positions(&req.entries);
+        let exacta_probs = predictor.calculate_exacta_probs(&pos_probs);
+        (pos_probs, exacta_probs)
+    } else {
+        let pos_probs = state.fallback_predictor.predict_positions(&req.entries);
+        let exacta_probs = state.fallback_predictor.calculate_exacta_probs(&pos_probs);
+        (pos_probs, exacta_probs)
+    };
+    drop(position_probs); // unused in this endpoint
 
     // Add odds and EV if provided
     if let Some(ref odds_data) = req.odds {
         for pred in &mut exacta_predictions {
-            if let Some(odds) = odds_data.iter()
+            if let Some(odds) = odds_data
+                .iter()
                 .find(|o| o.first == pred.first && o.second == pred.second)
             {
                 pred.odds = Some(odds.odds);

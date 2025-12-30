@@ -17,6 +17,11 @@ scikit-learn>=1.5.0
 lightgbm>=4.0.0
 optuna>=3.0.0
 
+# ONNX変換（Phase 4で使用）
+onnx>=1.15.0
+onnxmltools>=1.12.0
+onnxruntime>=1.17.0
+
 # Jupyter（探索用）
 jupyter>=1.1.0
 matplotlib>=3.9.0

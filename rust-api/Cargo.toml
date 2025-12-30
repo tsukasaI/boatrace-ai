@@ -23,5 +23,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Environment
 dotenvy = "0.15"
 
+# ONNX Runtime
+ort = "2.0.0-rc.10"
+
 [dev-dependencies]
 actix-rt = "2"

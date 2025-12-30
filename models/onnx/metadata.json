@@ -1,0 +1,28 @@
+{
+  "n_models": 6,
+  "n_features": 14,
+  "feature_names": [
+    "national_win_rate",
+    "national_in2_rate",
+    "local_win_rate",
+    "local_in2_rate",
+    "age",
+    "weight",
+    "class_encoded",
+    "motor_in2_rate",
+    "boat_in2_rate",
+    "win_rate_rank",
+    "win_rate_diff_from_avg",
+    "motor_rate_rank",
+    "boat_rate_rank",
+    "course_advantage"
+  ],
+  "model_files": [
+    "position_1.onnx",
+    "position_2.onnx",
+    "position_3.onnx",
+    "position_4.onnx",
+    "position_5.onnx",
+    "position_6.onnx"
+  ]
+}
