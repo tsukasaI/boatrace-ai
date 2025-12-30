@@ -217,39 +217,56 @@ uv run python -m src.cli.predict --list 20240115
 ```bash
 cd rust-api
 
+# Build with all features (recommended)
+cargo build --release --features full
+
 # Run API server
 cargo run --bin boatrace-api
 
 # Run CLI - List races
-cargo run --bin boatrace-cli -- --data-dir ../data/processed list -d 20240115
+cargo run --features cli --bin boatrace-cli -- --data-dir ../data/processed list -d 20240115
 
 # Run CLI - Predict race
-cargo run --bin boatrace-cli -- --data-dir ../data/processed predict -d 20240115 -s 23 -r 1
+cargo run --features cli --bin boatrace-cli -- --data-dir ../data/processed predict -d 20240115 -s 23 -r 1
 
 # With trifecta and custom Kelly settings
-cargo run --bin boatrace-cli -- --data-dir ../data/processed --odds-dir ../data/odds \
+cargo run --features cli --bin boatrace-cli -- --data-dir ../data/processed --odds-dir ../data/odds \
   predict -d 20240115 -s 23 -r 1 --trifecta --threshold 1.1 --kelly 0.25
 
 # Interactive mode
-cargo run --bin boatrace-cli -- --data-dir ../data/processed -i
+cargo run --features cli --bin boatrace-cli -- --data-dir ../data/processed -i
+
+# Backtest with historical data
+cargo run --features cli --bin boatrace-cli -- --data-dir ../data/processed --odds-dir ../data/odds \
+  backtest --threshold 1.1 --all-data
+
+# Parse raw data files (CP932 -> CSV)
+cargo run --features cli --bin boatrace-cli -- parse -i ../data/raw/programs -o ../data/processed -t programs
+cargo run --features cli --bin boatrace-cli -- parse -i ../data/raw/results -o ../data/processed -t results
+cargo run --features cli --bin boatrace-cli -- parse -i ../data/raw/results -o ../data/processed -t payouts
+
+# Scrape odds (requires 'scraper' feature)
+cargo run --features full --bin boatrace-cli -- scrape -d 20240115 -s 23 -r 1
+cargo run --features full --bin boatrace-cli -- scrape -d 20240115 -s 23 --trifecta
 
 # Show help
-cargo run --bin boatrace-cli -- --help
-cargo run --bin boatrace-cli -- predict --help
+cargo run --features cli --bin boatrace-cli -- --help
 
 # Build with specific features
 cargo build --features api        # API only
 cargo build --features cli        # CLI only
-cargo build --features full       # All features
+cargo build --features full       # All features (API + CLI + scraper)
 
 # Run tests
-cargo test
+cargo test --features full
 
 # API Endpoints
 # GET  /health         - Health check
 # POST /predict        - Full prediction (exacta + position probs)
 # POST /predict/exacta - Exacta only (top 10)
 ```
+
+See `rust-api/README.md` for detailed CLI documentation.
 
 ## Data URLs
 

@@ -3,13 +3,16 @@
 //! Validate profitability of EV > threshold strategy using historical data
 
 use super::metrics::{calculate_metrics, BacktestMetrics};
+use super::synthetic::SyntheticOddsGenerator;
 use crate::core::kelly::KellyCalculator;
 use crate::data::{load_exacta_odds, IndexedRaceData, RaceKey};
-use crate::predictor::FallbackPredictor;
+use crate::models::RacerEntry;
+use crate::predictor::{FallbackPredictor, Predictor};
+use crate::{ExactaPrediction, PositionProb};
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Individual bet record
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +166,10 @@ pub struct BacktestConfig {
     pub use_kelly: bool,
     pub kelly_multiplier: f64,
     pub test_start_date: Option<u32>,
+    /// Path to ONNX models directory (if None, uses fallback predictor)
+    pub model_dir: Option<PathBuf>,
+    /// Use synthetic odds when real odds are not available
+    pub use_synthetic_odds: bool,
 }
 
 impl Default for BacktestConfig {
@@ -174,6 +181,33 @@ impl Default for BacktestConfig {
             use_kelly: false,
             kelly_multiplier: 0.25,
             test_start_date: Some(20240701), // Second half of 2024
+            model_dir: None,
+            use_synthetic_odds: false,
+        }
+    }
+}
+
+/// Unified predictor that can use either ONNX or fallback
+enum UnifiedPredictor {
+    Onnx(Predictor),
+    Fallback(FallbackPredictor),
+}
+
+impl UnifiedPredictor {
+    fn predict_positions(&mut self, entries: &[RacerEntry]) -> Vec<PositionProb> {
+        match self {
+            UnifiedPredictor::Onnx(p) => p.predict_positions(entries).unwrap_or_else(|e| {
+                eprintln!("ONNX prediction failed: {}, using fallback", e);
+                FallbackPredictor::new().predict_positions(entries)
+            }),
+            UnifiedPredictor::Fallback(p) => p.predict_positions(entries),
+        }
+    }
+
+    fn calculate_exacta_probs(&self, position_probs: &[PositionProb]) -> Vec<ExactaPrediction> {
+        match self {
+            UnifiedPredictor::Onnx(p) => p.calculate_exacta_probs(position_probs),
+            UnifiedPredictor::Fallback(p) => p.calculate_exacta_probs(position_probs),
         }
     }
 }
@@ -181,8 +215,9 @@ impl Default for BacktestConfig {
 /// Backtest simulator
 pub struct BacktestSimulator {
     pub config: BacktestConfig,
-    predictor: FallbackPredictor,
+    predictor: UnifiedPredictor,
     kelly: Option<KellyCalculator>,
+    synthetic_odds: Option<SyntheticOddsGenerator>,
 }
 
 impl BacktestSimulator {
@@ -200,10 +235,36 @@ impl BacktestSimulator {
             None
         };
 
+        // Try to load ONNX models if path provided
+        let predictor = if let Some(ref model_dir) = config.model_dir {
+            match Predictor::new(model_dir) {
+                Ok(p) => {
+                    eprintln!("Using ONNX predictor from {:?}", model_dir);
+                    UnifiedPredictor::Onnx(p)
+                }
+                Err(e) => {
+                    eprintln!("Failed to load ONNX models: {}, using fallback", e);
+                    UnifiedPredictor::Fallback(FallbackPredictor::new())
+                }
+            }
+        } else {
+            eprintln!("No model directory specified, using fallback predictor");
+            UnifiedPredictor::Fallback(FallbackPredictor::new())
+        };
+
+        // Create synthetic odds generator if enabled
+        let synthetic_odds = if config.use_synthetic_odds {
+            eprintln!("Synthetic odds enabled (25% margin)");
+            Some(SyntheticOddsGenerator::default())
+        } else {
+            None
+        };
+
         Self {
             config,
-            predictor: FallbackPredictor::new(),
+            predictor,
             kelly,
+            synthetic_odds,
         }
     }
 
@@ -211,7 +272,7 @@ impl BacktestSimulator {
     ///
     /// Uses pre-indexed data structures for O(1) lookups instead of O(n) filtering.
     pub fn run<P: AsRef<Path>>(
-        &self,
+        &mut self,
         programs_path: P,
         results_path: P,
         odds_dir: Option<&Path>,
@@ -249,14 +310,20 @@ impl BacktestSimulator {
                     None => continue,
                 };
 
-            // Load odds if available
-            let odds: Option<HashMap<(u8, u8), f64>> =
+            // Load odds if available, or use synthetic odds
+            let real_odds: Option<HashMap<(u8, u8), f64>> =
                 odds_dir.and_then(|dir| load_exacta_odds(dir, *date, *stadium_code, *race_no));
 
-            // Skip if no odds (for now, require odds)
-            let odds = match odds {
+            let odds = match real_odds {
                 Some(o) => o,
-                None => continue,
+                None => {
+                    // Use synthetic odds if enabled, otherwise skip
+                    if let Some(ref synth) = self.synthetic_odds {
+                        synth.get_all_odds()
+                    } else {
+                        continue;
+                    }
+                }
             };
 
             // Run prediction

@@ -107,6 +107,14 @@ enum Commands {
         /// Use all data (ignore test_start filter)
         #[arg(long)]
         all_data: bool,
+
+        /// Path to ONNX models directory (uses fallback predictor if not specified)
+        #[arg(long)]
+        model_dir: Option<PathBuf>,
+
+        /// Use synthetic odds when real odds are not available
+        #[arg(long)]
+        synthetic_odds: bool,
     },
 
     /// Scrape odds from boatrace.jp (requires scraper feature)
@@ -195,6 +203,8 @@ fn main() -> Result<()> {
                 max_bets,
                 test_start,
                 all_data,
+                model_dir,
+                synthetic_odds,
             } => {
                 run_backtest(
                     &cli.data_dir,
@@ -207,6 +217,8 @@ fn main() -> Result<()> {
                     } else {
                         test_start.or(Some(20240701))
                     },
+                    model_dir,
+                    synthetic_odds,
                 )?;
             }
             #[cfg(feature = "scraper")]
@@ -628,6 +640,8 @@ fn run_backtest(
     stake: i64,
     max_bets: usize,
     test_start: Option<u32>,
+    model_dir: Option<PathBuf>,
+    synthetic_odds: bool,
 ) -> Result<()> {
     println!("{}", "Running backtest...".green());
 
@@ -638,6 +652,8 @@ fn run_backtest(
         use_kelly: false,
         kelly_multiplier: 0.25,
         test_start_date: test_start,
+        model_dir: model_dir.clone(),
+        use_synthetic_odds: synthetic_odds,
     };
 
     println!("EV Threshold: {:.2}", config.ev_threshold);
@@ -647,6 +663,12 @@ fn run_backtest(
         println!("Test start date: {}", start);
     } else {
         println!("Using all data");
+    }
+    if let Some(ref mdir) = model_dir {
+        println!("Model directory: {:?}", mdir);
+    }
+    if synthetic_odds {
+        println!("Synthetic odds: enabled");
     }
     println!();
 
@@ -661,7 +683,7 @@ fn run_backtest(
     let programs_path = data_dir.join("programs_entries.csv");
     let results_path = data_dir.join("results_entries.csv");
 
-    let simulator = BacktestSimulator::new(config);
+    let mut simulator = BacktestSimulator::new(config);
 
     let result = simulator
         .run(&programs_path, &results_path, Some(odds_dir))
@@ -1178,7 +1200,7 @@ fn run_interactive(data_dir: &Path, odds_dir: &Path) -> Result<()> {
                     .interact_text()?;
 
                 println!();
-                run_backtest(data_dir, odds_dir, threshold, 100, 3, Some(20240701))?;
+                run_backtest(data_dir, odds_dir, threshold, 100, 3, Some(20240701), None, false)?;
                 println!();
             }
             3 => {
