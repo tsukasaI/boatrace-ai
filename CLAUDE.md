@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This is a Japanese boat racing (競艇/Kyotei) AI prediction system. The goal is to predict 2-consecutive (2連単/Exacta) race outcomes and maximize ROI using expected value-based betting strategy.
+This is a Japanese boat racing (Kyotei) AI prediction system. The goal is to predict exacta (2-consecutive) race outcomes and maximize ROI using expected value-based betting strategy.
 
 ## Tech Stack
 
@@ -10,7 +10,7 @@ This is a Japanese boat racing (競艇/Kyotei) AI prediction system. The goal is
 - **ML Framework**: LightGBM (gradient boosting for tabular data)
 - **Hyperparameter Tuning**: Optuna
 - **Data Processing**: pandas, numpy
-- **Inference API**: Rust + actix-web
+- **Inference API**: Rust + actix-web + ONNX Runtime
 - **Data Source**: Official boat race website (boatrace.jp)
 
 ## Project Structure
@@ -19,9 +19,9 @@ This is a Japanese boat racing (競艇/Kyotei) AI prediction system. The goal is
 boatrace-ai/
 ├── config/settings.py           # Configuration (dates, URLs, stadium codes)
 ├── data/
-│   ├── raw/                     # Raw data (LZH → TXT files)
-│   │   ├── results/             # Race results (着順, タイム)
-│   │   └── programs/            # Race programs (出走表, 選手情報)
+│   ├── raw/                     # Raw data (LZH -> TXT files)
+│   │   ├── results/             # Race results (rankings, times)
+│   │   └── programs/            # Race programs (entries, racer info)
 │   └── processed/               # Processed CSV files
 ├── models/                      # Saved model files
 │   ├── boatrace_model.pkl       # LightGBM model (Python)
@@ -32,27 +32,30 @@ boatrace-ai/
 ├── src/
 │   ├── data_collection/
 │   │   ├── downloader.py        # Download LZH files from official site
-│   │   └── extractor.py         # Extract LZH → TXT
+│   │   └── extractor.py         # Extract LZH -> TXT
 │   ├── preprocessing/
-│   │   └── parser.py            # Parse TXT → CSV (programs & results)
+│   │   └── parser.py            # Parse TXT -> CSV (programs & results)
 │   ├── models/
 │   │   ├── features.py          # Feature engineering
 │   │   ├── dataset.py           # Dataset builder & train/val/test split
 │   │   ├── train.py             # LightGBM training pipeline
 │   │   ├── predictor.py         # Exacta probability & EV calculation
-│   │   └── evaluate.py          # Model evaluation metrics
+│   │   ├── evaluate.py          # Model evaluation metrics
+│   │   └── export_onnx.py       # Export LightGBM to ONNX format
 │   ├── backtesting/
 │   │   ├── simulator.py         # Backtest simulator with EV strategy
 │   │   ├── metrics.py           # ROI, hit rate, drawdown calculations
-│   │   └── report.py            # CSV/text report generation
-│   └── api/                     # (unused - using rust-api instead)
+│   │   ├── report.py            # CSV/text report generation
+│   │   └── synthetic_odds.py    # Synthetic odds generator
+│   └── api/                     # (deprecated - using rust-api)
 ├── rust-api/                    # Rust inference API
 │   ├── src/
 │   │   ├── main.rs              # HTTP server (actix-web)
 │   │   ├── models.rs            # Request/response types
-│   │   ├── predictor.rs         # Prediction logic (mock → ONNX)
-│   │   └── handlers/            # Route handlers
+│   │   ├── predictor.rs         # ONNX inference + fallback predictor
+│   │   └── handlers/            # Route handlers (health, predict)
 │   └── Cargo.toml               # Rust dependencies
+├── tests/                       # Python test suite
 └── notebooks/                   # Jupyter exploration
 ```
 
@@ -61,30 +64,29 @@ boatrace-ai/
 ### Phase 1: Data Collection & Exploration ✅ COMPLETE
 1. ✅ Download race data from official site (2023-2024, 2 years)
 2. ✅ Extract LZH files to TXT
-3. ✅ Parse TXT to CSV
-4. ⬚ Explore data in Jupyter to understand features
+3. ✅ Parse TXT to CSV (programs, results, payouts)
+4. ✅ Basic data exploration
 
-### Phase 2: Model Building ✅ IMPLEMENTED
+### Phase 2: Model Building ✅ COMPLETE
 1. ✅ Feature engineering (base, historical, relative features)
 2. ✅ LightGBM multi-output model for position probabilities
 3. ✅ Exacta probability calculation
 4. ✅ Expected value calculation
-5. ⬚ Train and evaluate on full dataset
+5. ✅ ONNX export for production inference
 
-### Phase 3: Backtesting ✅ IMPLEMENTED
+### Phase 3: Backtesting ✅ COMPLETE
 1. ✅ PayoutParser extracts odds from raw result files
 2. ✅ BacktestSimulator with EV > 1.0 betting strategy
 3. ✅ Metrics: ROI, hit rate, profit factor, max drawdown
 4. ✅ Analysis by stadium, race type, odds range
-5. ⬚ Run backtest on full dataset
+5. ✅ Synthetic odds generation (avoids data leakage)
 
 ### Phase 4: Inference API ✅ COMPLETE
 1. ✅ Rust REST API with actix-web
 2. ✅ Endpoints: /health, /predict, /predict/exacta
-3. ✅ ONNX model export from LightGBM
-4. ✅ ONNX Runtime inference in Rust
-5. ✅ Fallback predictor when models unavailable
-6. ⬚ Web dashboard for daily predictions
+3. ✅ ONNX Runtime inference in Rust
+4. ✅ Fallback predictor when models unavailable
+5. ✅ Proper error handling with graceful fallback
 
 ## Commands
 
@@ -163,7 +165,7 @@ MODEL_DIR=/path/to/models/onnx cargo run
 ```
 
 #### API Endpoints
-- `GET /health` - Health check
+- `GET /health` - Health check (returns model_loaded status)
 - `POST /predict` - Full prediction (position probs + exacta + value bets)
 - `POST /predict/exacta` - Exacta predictions only (top 10)
 
@@ -180,7 +182,7 @@ expected_value = predicted_probability × odds
 Buy only when expected_value > 1.0
 ```
 
-### Bet Type: 2連単 (Exacta)
+### Bet Type: Exacta (2-consecutive)
 - Predict 1st and 2nd place in exact order
 - 30 combinations (6 boats × 5 remaining)
 
@@ -208,24 +210,31 @@ P(boat_i=1st, boat_j=2nd) ≈ P(boat_i=1st) × P(boat_j=2nd) / (1 - P(boat_j=1st
 4. **Stadium Codes**: 1-24 for 24 race venues across Japan
 5. **Data Split**: 2023 train / 2024-H1 val / 2024-H2 test (time-based)
 
-## TODO
+## Future Plans
 
-### Immediate
-- [ ] Wait for data download to complete (~53% done)
-- [ ] Run extractor and parser on full dataset
-- [ ] Retrain model with full 2-year data
-- [ ] Run backtest with synthetic odds on full dataset
+### Phase 5: Production Deployment
+- [ ] Docker containerization for Rust API
+- [ ] CI/CD pipeline with GitHub Actions
+- [ ] Health monitoring and alerting
+- [ ] Rate limiting and authentication
 
-### Short-term
-- [ ] Add weather/water condition features (requires scraping)
-- [ ] Create Jupyter notebook for data exploration
-- [ ] Tune EV threshold based on backtest results
-- [ ] Add Docker deployment
+### Phase 6: Enhanced Features
+- [ ] Weather/water condition features (scrape from boatrace.jp)
+- [ ] Real-time odds integration
+- [ ] Support for trifecta and trio bet types
+- [ ] Kelly criterion for optimal bet sizing
 
-### Long-term
-- [ ] Add support for 3連単, 3連複
-- [ ] Implement Kelly criterion for bet sizing
-- [ ] Create web dashboard
+### Phase 7: User Interface
+- [ ] Web dashboard for daily predictions
+- [ ] Mobile-friendly responsive design
+- [ ] Historical performance tracking
+- [ ] Customizable betting strategies
+
+### Phase 8: Advanced ML
+- [ ] Deep learning models (Transformer, LSTM)
+- [ ] Ensemble methods
+- [ ] Online learning for model updates
+- [ ] Feature importance analysis dashboard
 
 ## References
 
