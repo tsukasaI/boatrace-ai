@@ -2,12 +2,13 @@
 """
 Daily Odds Collection Script
 
-Scrapes exacta odds from all active stadiums for a given date.
+Scrapes exacta/trifecta odds from all active stadiums for a given date.
 
 Usage:
     uv run python -m src.data_collection.collect_daily --date 20251230
     uv run python -m src.data_collection.collect_daily  # Today's date
     uv run python -m src.data_collection.collect_daily --stadiums 23 24  # Specific stadiums
+    uv run python -m src.data_collection.collect_daily --trifecta  # Collect trifecta odds
 """
 
 import sys
@@ -21,7 +22,12 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import STADIUM_CODES, PROJECT_ROOT
-from src.data_collection.odds_scraper import OddsScraper, save_odds, ODDS_DIR
+from src.data_collection.odds_scraper import (
+    OddsScraper,
+    save_odds,
+    save_trifecta_odds,
+    ODDS_DIR,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +41,7 @@ def collect_stadium(
     date: int,
     stadium_code: int,
     skip_existing: bool = True,
+    bet_type: str = "exacta",
 ) -> dict:
     """
     Collect odds for all races at a stadium.
@@ -44,6 +51,7 @@ def collect_stadium(
         date: Date in YYYYMMDD format
         stadium_code: Stadium code (1-24)
         skip_existing: Skip races that already have saved odds
+        bet_type: "exacta" or "trifecta"
 
     Returns:
         Stats dict with success/skip/fail counts
@@ -51,23 +59,32 @@ def collect_stadium(
     stats = {"success": 0, "skip": 0, "fail": 0}
     stadium_name = STADIUM_CODES.get(stadium_code, f"Stadium {stadium_code}")
 
+    # Expected combinations: exacta=30, trifecta=120
+    expected_count = 120 if bet_type == "trifecta" else 30
+    file_suffix = "_3t.json" if bet_type == "trifecta" else ".json"
+
     for race_no in range(1, 13):
         # Check if already exists
         if skip_existing:
-            filepath = ODDS_DIR / f"{date}_{stadium_code:02d}_{race_no:02d}.json"
+            filepath = ODDS_DIR / f"{date}_{stadium_code:02d}_{race_no:02d}{file_suffix}"
             if filepath.exists():
                 stats["skip"] += 1
                 continue
 
         # Scrape odds
-        odds = scraper.scrape_exacta(date, stadium_code, race_no)
+        if bet_type == "trifecta":
+            odds = scraper.scrape_trifecta(date, stadium_code, race_no)
+            save_func = save_trifecta_odds
+        else:
+            odds = scraper.scrape_exacta(date, stadium_code, race_no)
+            save_func = save_odds
 
-        if odds and len(odds.odds) == 30:
-            save_odds(odds)
+        if odds and len(odds.odds) == expected_count:
+            save_func(odds)
             stats["success"] += 1
         elif odds:
             # Partial odds (race may have scratches)
-            save_odds(odds)
+            save_func(odds)
             stats["success"] += 1
             logger.warning(f"{stadium_name} R{race_no}: Only {len(odds.odds)} combinations")
         else:
@@ -81,6 +98,7 @@ def collect_all_stadiums(
     stadiums: Optional[List[int]] = None,
     delay: float = 2.0,
     skip_existing: bool = True,
+    bet_type: str = "exacta",
 ) -> dict:
     """
     Collect odds from all stadiums for a given date.
@@ -90,6 +108,7 @@ def collect_all_stadiums(
         stadiums: List of stadium codes (default: all 24)
         delay: Delay between requests in seconds
         skip_existing: Skip races that already have saved odds
+        bet_type: "exacta" or "trifecta"
 
     Returns:
         Overall stats dict
@@ -108,7 +127,9 @@ def collect_all_stadiums(
         stadium_name = STADIUM_CODES.get(stadium_code, f"Stadium {stadium_code}")
 
         stats = collect_stadium(
-            scraper, date, stadium_code, skip_existing=skip_existing
+            scraper, date, stadium_code,
+            skip_existing=skip_existing,
+            bet_type=bet_type,
         )
 
         total_stats["stadiums_processed"] += 1
@@ -128,13 +149,14 @@ def collect_all_stadiums(
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
-        description="Collect exacta odds from all stadiums",
+        description="Collect exacta/trifecta odds from all stadiums",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                           # Collect today's odds
+  %(prog)s                           # Collect today's exacta odds
   %(prog)s --date 20251230           # Collect specific date
   %(prog)s --stadiums 23 24          # Only specific stadiums
+  %(prog)s --trifecta                # Collect trifecta odds
   %(prog)s --no-skip                 # Re-scrape existing files
         """
     )
@@ -150,6 +172,11 @@ Examples:
         type=int,
         nargs="+",
         help="Stadium codes to collect (default: all 24)"
+    )
+    parser.add_argument(
+        "--trifecta", "-t",
+        action="store_true",
+        help="Collect trifecta (3連単) odds instead of exacta (2連単)"
     )
     parser.add_argument(
         "--delay",
@@ -188,8 +215,12 @@ Examples:
     # Ensure output directory exists
     ODDS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Determine bet type
+    bet_type = "trifecta" if args.trifecta else "exacta"
+    bet_type_ja = "3連単" if args.trifecta else "2連単"
+
     # Collect odds
-    logger.info(f"Collecting odds for {args.date}")
+    logger.info(f"Collecting {bet_type} ({bet_type_ja}) odds for {args.date}")
     logger.info(f"Output directory: {ODDS_DIR}")
 
     stats = collect_all_stadiums(
@@ -197,13 +228,15 @@ Examples:
         stadiums=args.stadiums,
         delay=args.delay,
         skip_existing=not args.no_skip,
+        bet_type=bet_type,
     )
 
     # Print summary
     print("\n" + "=" * 50)
-    print("COLLECTION SUMMARY")
+    print(f"COLLECTION SUMMARY ({bet_type_ja})")
     print("=" * 50)
     print(f"Date: {args.date}")
+    print(f"Bet type: {bet_type} ({bet_type_ja})")
     print(f"Stadiums processed: {stats['stadiums_processed']}")
     print(f"Races scraped: {stats['races_success']}")
     print(f"Races skipped: {stats['races_skip']}")

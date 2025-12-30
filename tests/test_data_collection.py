@@ -19,8 +19,11 @@ from src.data_collection.extractor import LzhExtractor
 from src.data_collection.odds_scraper import (
     OddsScraper,
     ExactaOdds,
+    TrifectaOdds,
     save_odds,
     load_odds,
+    save_trifecta_odds,
+    load_trifecta_odds,
 )
 
 
@@ -510,3 +513,135 @@ class TestOddsSaveLoad:
         """Test loading non-existent odds returns None"""
         loaded = load_odds(20251230, 99, 1, tmp_path)
         assert loaded is None
+
+
+class TestTrifectaOdds:
+    """Tests for TrifectaOdds dataclass"""
+
+    def test_to_json_dict(self):
+        """Test conversion to JSON-serializable dict"""
+        odds = TrifectaOdds(
+            date=20251230,
+            stadium_code=23,
+            race_no=1,
+            scraped_at="2025-12-30T10:00:00",
+            odds={(1, 2, 3): 15.5, (1, 3, 2): 22.0, (2, 1, 3): 30.2},
+        )
+
+        json_dict = odds.to_json_dict()
+
+        assert json_dict["date"] == 20251230
+        assert json_dict["stadium_code"] == 23
+        assert json_dict["race_no"] == 1
+        assert json_dict["scraped_at"] == "2025-12-30T10:00:00"
+        assert json_dict["trifecta"]["1-2-3"] == 15.5
+        assert json_dict["trifecta"]["1-3-2"] == 22.0
+        assert json_dict["trifecta"]["2-1-3"] == 30.2
+
+    def test_from_json_dict(self):
+        """Test creation from JSON dict"""
+        json_dict = {
+            "date": 20251230,
+            "stadium_code": 23,
+            "race_no": 1,
+            "scraped_at": "2025-12-30T10:00:00",
+            "trifecta": {"1-2-3": 15.5, "1-3-2": 22.0, "2-1-3": 30.2},
+        }
+
+        odds = TrifectaOdds.from_json_dict(json_dict)
+
+        assert odds.date == 20251230
+        assert odds.stadium_code == 23
+        assert odds.race_no == 1
+        assert odds.odds[(1, 2, 3)] == 15.5
+        assert odds.odds[(1, 3, 2)] == 22.0
+        assert odds.odds[(2, 1, 3)] == 30.2
+
+
+class TestTrifectaSaveLoad:
+    """Tests for save_trifecta_odds and load_trifecta_odds functions"""
+
+    def test_save_and_load_trifecta_odds(self, tmp_path):
+        """Test saving and loading trifecta odds"""
+        odds = TrifectaOdds(
+            date=20251230,
+            stadium_code=23,
+            race_no=1,
+            scraped_at="2025-12-30T10:00:00",
+            odds={(1, 2, 3): 15.5, (1, 3, 2): 22.0, (2, 1, 3): 30.2},
+        )
+
+        # Save
+        filepath = save_trifecta_odds(odds, tmp_path)
+        assert filepath.exists()
+        assert filepath.name == "20251230_23_01_3t.json"
+
+        # Load
+        loaded = load_trifecta_odds(20251230, 23, 1, tmp_path)
+        assert loaded is not None
+        assert loaded.date == 20251230
+        assert loaded.stadium_code == 23
+        assert loaded.race_no == 1
+        assert loaded.odds[(1, 2, 3)] == 15.5
+        assert loaded.odds[(1, 3, 2)] == 22.0
+
+    def test_load_nonexistent_trifecta_odds(self, tmp_path):
+        """Test loading non-existent trifecta odds returns None"""
+        loaded = load_trifecta_odds(20251230, 99, 1, tmp_path)
+        assert loaded is None
+
+    def test_trifecta_filename_differs_from_exacta(self, tmp_path):
+        """Test trifecta files use _3t suffix to avoid collision"""
+        exacta = ExactaOdds(
+            date=20251230,
+            stadium_code=23,
+            race_no=1,
+            scraped_at="2025-12-30T10:00:00",
+            odds={(1, 2): 5.5},
+        )
+        trifecta = TrifectaOdds(
+            date=20251230,
+            stadium_code=23,
+            race_no=1,
+            scraped_at="2025-12-30T10:00:00",
+            odds={(1, 2, 3): 15.5},
+        )
+
+        # Save both
+        exacta_path = save_odds(exacta, tmp_path)
+        trifecta_path = save_trifecta_odds(trifecta, tmp_path)
+
+        # Should be different files
+        assert exacta_path != trifecta_path
+        assert exacta_path.name == "20251230_23_01.json"
+        assert trifecta_path.name == "20251230_23_01_3t.json"
+
+        # Both should load correctly
+        loaded_exacta = load_odds(20251230, 23, 1, tmp_path)
+        loaded_trifecta = load_trifecta_odds(20251230, 23, 1, tmp_path)
+        assert loaded_exacta is not None
+        assert loaded_trifecta is not None
+        assert (1, 2) in loaded_exacta.odds
+        assert (1, 2, 3) in loaded_trifecta.odds
+
+
+class TestOddsScraperTrifecta:
+    """Tests for OddsScraper trifecta functionality"""
+
+    def test_build_url_trifecta(self):
+        """Test URL building for trifecta odds page"""
+        scraper = OddsScraper()
+        url = scraper._build_url(20251230, 23, 1, bet_type="trifecta")
+
+        assert "rno=1" in url
+        assert "jcd=23" in url
+        assert "hd=20251230" in url
+        assert "odds3t" in url
+
+    def test_build_url_exacta_default(self):
+        """Test URL building defaults to exacta"""
+        scraper = OddsScraper()
+        url = scraper._build_url(20251230, 23, 1)
+
+        assert "odds2tf" in url
+        assert "odds3t" not in url
