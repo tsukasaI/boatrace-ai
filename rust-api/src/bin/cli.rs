@@ -13,6 +13,9 @@ use boatrace::data::{load_exacta_odds, load_trifecta_odds, RaceData};
 use boatrace::predictor::FallbackPredictor;
 use boatrace::{ExactaPrediction, RacerEntry, TrifectaPrediction};
 
+#[cfg(feature = "scraper")]
+use boatrace::scraper::{get_stadium_name as scraper_stadium_name, OddsScraper, ScraperConfig};
+
 /// Default data directory (relative to project root)
 const DEFAULT_DATA_DIR: &str = "data/processed";
 const DEFAULT_ODDS_DIR: &str = "data/odds";
@@ -103,6 +106,34 @@ enum Commands {
         #[arg(long)]
         all_data: bool,
     },
+
+    /// Scrape odds from boatrace.jp (requires scraper feature)
+    #[cfg(feature = "scraper")]
+    Scrape {
+        /// Race date (YYYYMMDD format)
+        #[arg(short, long)]
+        date: u32,
+
+        /// Stadium code (1-24)
+        #[arg(short, long)]
+        stadium: u8,
+
+        /// Race number (1-12). If not specified, scrape all 12 races.
+        #[arg(short, long)]
+        race: Option<u8>,
+
+        /// Scrape trifecta (3連単) instead of exacta (2連単)
+        #[arg(long)]
+        trifecta: bool,
+
+        /// Delay between requests in milliseconds
+        #[arg(long, default_value = "2000")]
+        delay: u64,
+
+        /// List all stadium codes
+        #[arg(long)]
+        list_stadiums: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -160,6 +191,17 @@ fn main() -> Result<()> {
                         test_start.or(Some(20240701))
                     },
                 )?;
+            }
+            #[cfg(feature = "scraper")]
+            Commands::Scrape {
+                date,
+                stadium,
+                race,
+                trifecta,
+                delay,
+                list_stadiums,
+            } => {
+                run_scrape(&cli.odds_dir, date, stadium, race, trifecta, delay, list_stadiums)?;
             }
         }
     } else {
@@ -645,6 +687,159 @@ fn run_backtest(
                 a.roi * 100.0
             );
         }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "scraper")]
+fn run_scrape(
+    odds_dir: &Path,
+    date: u32,
+    stadium: u8,
+    race: Option<u8>,
+    trifecta: bool,
+    delay: u64,
+    list_stadiums: bool,
+) -> Result<()> {
+    // Handle list stadiums
+    if list_stadiums {
+        println!("{}", "Stadium Codes:".yellow().bold());
+        println!("{}", "-".repeat(40));
+        for code in 1..=24u8 {
+            println!("  {:2}: {}", code, scraper_stadium_name(code));
+        }
+        return Ok(());
+    }
+
+    // Validate inputs
+    if !(1..=24).contains(&stadium) {
+        anyhow::bail!("Stadium code must be 1-24, got {}", stadium);
+    }
+    if let Some(r) = race {
+        if !(1..=12).contains(&r) {
+            anyhow::bail!("Race number must be 1-12, got {}", r);
+        }
+    }
+
+    let bet_type = if trifecta { "trifecta" } else { "exacta" };
+    println!(
+        "{}: {} {} at {} ({})",
+        "Scraping".green(),
+        bet_type,
+        date,
+        scraper_stadium_name(stadium),
+        stadium
+    );
+    println!();
+
+    // Create runtime for async operations
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("Failed to create tokio runtime")?;
+
+    let config = ScraperConfig {
+        delay_ms: delay,
+        ..Default::default()
+    };
+    let scraper = OddsScraper::new(config);
+
+    // Ensure output directory exists
+    std::fs::create_dir_all(odds_dir)
+        .with_context(|| format!("Failed to create odds directory: {:?}", odds_dir))?;
+
+    if let Some(race_no) = race {
+        // Scrape single race
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} {msg}")
+                .unwrap(),
+        );
+        pb.set_message(format!("Scraping {} R{}...", bet_type, race_no));
+
+        let result = rt.block_on(async {
+            if trifecta {
+                let odds = scraper.scrape_trifecta(date, stadium, race_no).await?;
+                let filename = format!("{}_{:02}_{:02}_3t.json", date, stadium, race_no);
+                let filepath = odds_dir.join(&filename);
+                let json = serde_json::to_string_pretty(&odds)?;
+                std::fs::write(&filepath, json)?;
+                Ok::<_, anyhow::Error>((filepath, odds.trifecta.len()))
+            } else {
+                let odds = scraper.scrape_exacta(date, stadium, race_no).await?;
+                let filename = format!("{}_{:02}_{:02}.json", date, stadium, race_no);
+                let filepath = odds_dir.join(&filename);
+                let json = serde_json::to_string_pretty(&odds)?;
+                std::fs::write(&filepath, json)?;
+                Ok((filepath, odds.exacta.len()))
+            }
+        });
+
+        pb.finish_and_clear();
+
+        match result {
+            Ok((filepath, count)) => {
+                println!("{}: {:?}", "Saved".green(), filepath);
+                println!("Combinations: {}", count);
+            }
+            Err(e) => {
+                println!("{}: {}", "Failed".red(), e);
+            }
+        }
+    } else {
+        // Scrape all races
+        let pb = ProgressBar::new(12);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("#>-"),
+        );
+
+        let mut success_count = 0;
+
+        for race_no in 1..=12u8 {
+            pb.set_message(format!("R{}", race_no));
+
+            let result = rt.block_on(async {
+                if trifecta {
+                    let odds = scraper.scrape_trifecta(date, stadium, race_no).await?;
+                    let filename = format!("{}_{:02}_{:02}_3t.json", date, stadium, race_no);
+                    let filepath = odds_dir.join(&filename);
+                    let json = serde_json::to_string_pretty(&odds)?;
+                    std::fs::write(&filepath, json)?;
+                    Ok::<_, anyhow::Error>(filepath)
+                } else {
+                    let odds = scraper.scrape_exacta(date, stadium, race_no).await?;
+                    let filename = format!("{}_{:02}_{:02}.json", date, stadium, race_no);
+                    let filepath = odds_dir.join(&filename);
+                    let json = serde_json::to_string_pretty(&odds)?;
+                    std::fs::write(&filepath, json)?;
+                    Ok(filepath)
+                }
+            });
+
+            match result {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    pb.println(format!("{} R{}: {}", "Warning".yellow(), race_no, e));
+                }
+            }
+
+            pb.inc(1);
+        }
+
+        pb.finish_and_clear();
+
+        println!(
+            "\n{}: {} {} races saved to {:?}",
+            "Complete".green(),
+            success_count,
+            bet_type,
+            odds_dir
+        );
     }
 
     Ok(())

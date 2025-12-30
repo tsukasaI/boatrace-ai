@@ -31,6 +31,10 @@ pub mod predictor;
 #[cfg(feature = "api")]
 pub mod error;
 
+// Scraper module (only available with scraper feature)
+#[cfg(feature = "scraper")]
+pub mod scraper;
+
 // Re-export commonly used types
 pub use data::{
     load_exacta_odds, load_trifecta_odds, FeatureEngineering, ProgramEntry, RaceData, RacerFeatures,
