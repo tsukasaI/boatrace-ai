@@ -1,16 +1,23 @@
 """
 Synthetic Odds Generation Module
 
-Calculate exacta probabilities by course from historical data
-and simulate market odds
+Generate realistic market odds for backtesting when historical odds are unavailable.
+
+Two modes:
+1. Course-based: Uses historical win rates by course position
+2. Model-based: Uses model predictions + market noise for realistic simulation
+
+Note: This is an approximation. For production use, scrape real-time odds from
+boatrace.jp or use Team-Nave API (¥3,300/month).
 """
 
 import numpy as np
 import pandas as pd
 from pathlib import Path
+from typing import Optional
 
 # Historical win rate by course (general tendency in boat racing)
-# Course 1 has overwhelming advantage
+# Course 1 has overwhelming advantage due to inside position
 HISTORICAL_WIN_RATE = {
     1: 0.55,  # Course 1: approx. 55%
     2: 0.14,  # Course 2: approx. 14%
@@ -123,6 +130,94 @@ class SyntheticOddsGenerator:
         """
         # TODO: Adjust odds based on race characteristics
         return self.get_all_odds()
+
+    def generate_from_predictions(
+        self,
+        exacta_probs: dict,
+        noise_std: float = 0.15,
+        min_odds: float = 1.1,
+    ) -> dict:
+        """
+        Generate synthetic market odds from model predictions with market noise.
+
+        This simulates realistic market odds by:
+        1. Starting from model's predicted probabilities
+        2. Adding market noise (other bettors have different views)
+        3. Applying takeout margin
+        4. Clamping to realistic ranges
+
+        Args:
+            exacta_probs: Dict of {(first, second): probability} from model
+            noise_std: Standard deviation of log-normal noise (market disagreement)
+            min_odds: Minimum allowed odds
+
+        Returns:
+            Dictionary of {(first, second): odds}
+        """
+        odds = {}
+
+        for (first, second), prob in exacta_probs.items():
+            if prob <= 0:
+                prob = 0.001
+
+            # Add log-normal noise to simulate market variance
+            # This represents uncertainty in true probability
+            noise = np.random.lognormal(0, noise_std)
+            noisy_prob = prob * noise
+
+            # Clamp probability
+            noisy_prob = max(0.001, min(0.99, noisy_prob))
+
+            # Convert to odds with margin
+            fair_odds = 1.0 / noisy_prob
+            market_odds = fair_odds * (1 - self.margin)
+
+            # Apply minimum odds
+            odds[(first, second)] = max(min_odds, round(market_odds, 1))
+
+        return odds
+
+    def generate_correlated_odds(
+        self,
+        exacta_probs: dict,
+        correlation: float = 0.7,
+    ) -> dict:
+        """
+        Generate odds that are correlated with true probabilities but not perfect.
+
+        Higher correlation = market is more efficient (harder to find value)
+        Lower correlation = market has more inefficiencies (easier to find value)
+
+        Args:
+            exacta_probs: Model predicted probabilities
+            correlation: How efficient the market is (0-1)
+
+        Returns:
+            Dictionary of {(first, second): odds}
+        """
+        odds = {}
+
+        # Generate base probabilities (course-based)
+        base_probs = self.exacta_probs
+
+        for (first, second), model_prob in exacta_probs.items():
+            # Blend model probability with course-based probability
+            base_prob = base_probs.get((first, second), 0.01)
+
+            # Market probability is weighted blend
+            market_prob = correlation * model_prob + (1 - correlation) * base_prob
+
+            # Add small noise
+            noise = np.random.normal(1.0, 0.1)
+            market_prob = max(0.001, market_prob * noise)
+
+            # Convert to odds
+            fair_odds = 1.0 / market_prob
+            market_odds = fair_odds * (1 - self.margin)
+
+            odds[(first, second)] = max(1.1, round(market_odds, 1))
+
+        return odds
 
 
 def calculate_historical_exacta_rates(results_df: pd.DataFrame) -> dict:

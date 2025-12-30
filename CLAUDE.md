@@ -79,7 +79,9 @@ boatrace-ai/
 2. ✅ BacktestSimulator with EV > 1.0 betting strategy
 3. ✅ Metrics: ROI, hit rate, profit factor, max drawdown
 4. ✅ Analysis by stadium, race type, odds range
-5. ✅ Synthetic odds generation (avoids data leakage)
+5. ✅ Synthetic odds generation (market simulation with noise)
+6. ✅ Kelly criterion bet sizing
+7. ✅ Trifecta (3-consecutive) support
 
 ### Phase 4: Inference API ✅ COMPLETE
 1. ✅ Rust REST API with actix-web
@@ -87,6 +89,13 @@ boatrace-ai/
 3. ✅ ONNX Runtime inference in Rust
 4. ✅ Fallback predictor when models unavailable
 5. ✅ Proper error handling with graceful fallback
+
+### Phase 4.5: CLI Tool ✅ COMPLETE
+1. ✅ Interactive prediction mode
+2. ✅ Single race prediction with --date/--stadium/--race
+3. ✅ Kelly criterion bet sizing recommendations
+4. ✅ Trifecta prediction support
+5. ✅ List available races by date
 
 ## Commands
 
@@ -144,6 +153,24 @@ uv run python -m src.backtesting.simulator --all-data
 
 # Use synthetic odds (avoids data leakage from real payouts)
 uv run python -m src.backtesting.simulator --synthetic-odds
+```
+
+### CLI Tool
+```bash
+# Interactive mode
+uv run python -m src.cli.predict --interactive
+
+# Single race prediction
+uv run python -m src.cli.predict --date 20240115 --stadium 23 --race 1
+
+# With trifecta predictions
+uv run python -m src.cli.predict -d 20240115 -s 23 -r 1 --trifecta
+
+# Custom Kelly sizing
+uv run python -m src.cli.predict -d 20240115 -s 23 -r 1 --bankroll 50000 --kelly 0.25
+
+# List available races for a date
+uv run python -m src.cli.predict --list 20240115
 ```
 
 ### Phase 4: Rust API
@@ -210,27 +237,51 @@ P(boat_i=1st, boat_j=2nd) ≈ P(boat_i=1st) × P(boat_j=2nd) / (1 - P(boat_j=1st
 4. **Stadium Codes**: 1-24 for 24 race venues across Japan
 5. **Data Split**: 2023 train / 2024-H1 val / 2024-H2 test (time-based)
 
+## Backtest Results (Synthetic Odds)
+
+Using synthetic odds with 70% market efficiency and 25% takeout:
+
+| EV Threshold | Bets | Wins | ROI | Hit Rate | Avg EV |
+|--------------|------|------|------|----------|--------|
+| 1.0 | 51,540 | 2,781 | -8.7% | 5.4% | 1.07 |
+| 1.1 | 14,488 | 735 | -7.4% | 5.1% | 1.16 |
+| 1.2 | 3,152 | 154 | -4.8% | 4.9% | 1.26 |
+| 1.5 | 22 | 3 | +193% | 13.6% | 1.55 |
+
+**Key Insights:**
+- Higher EV thresholds reduce volume but improve ROI
+- EV > 1.5 shows profitability but with very few opportunities
+- Real odds data needed for accurate validation
+
+**Note:** These results use synthetic odds (simulated market). For production validation,
+real-time odds scraping from boatrace.jp is required.
+
 ## Future Plans
 
-### Phase 5: Production Deployment
+### Phase 5: Real-time Odds Scraping (HIGH PRIORITY)
+- [ ] Scrape live odds from boatrace.jp during race day
+- [ ] Build historical odds database for better backtesting
+- [ ] Alternative: Team-Nave API subscription (¥3,300/month)
+
+### Phase 6: Production Deployment
 - [ ] Docker containerization for Rust API
 - [ ] CI/CD pipeline with GitHub Actions
 - [ ] Health monitoring and alerting
 - [ ] Rate limiting and authentication
 
-### Phase 6: Enhanced Features
+### Phase 7: Enhanced Features
 - [ ] Weather/water condition features (scrape from boatrace.jp)
-- [ ] Real-time odds integration
-- [ ] Support for trifecta and trio bet types
-- [ ] Kelly criterion for optimal bet sizing
+- [ ] ~~Support for trifecta and trio bet types~~ ✅ Done
+- [ ] ~~Kelly criterion for optimal bet sizing~~ ✅ Done
+- [ ] Quinella (unordered exacta) support
 
-### Phase 7: User Interface
+### Phase 8: User Interface
 - [ ] Web dashboard for daily predictions
 - [ ] Mobile-friendly responsive design
 - [ ] Historical performance tracking
 - [ ] Customizable betting strategies
 
-### Phase 8: Advanced ML
+### Phase 9: Advanced ML
 - [ ] Deep learning models (Transformer, LSTM)
 - [ ] Ensemble methods
 - [ ] Online learning for model updates

@@ -181,8 +181,24 @@ class BacktestSimulator:
 
             # Get odds
             if self.use_synthetic_odds:
-                # Use synthetic odds
-                odds = self.synthetic_odds_gen.get_all_odds()
+                # Generate features first to get model predictions
+                features = self.feature_eng.create_base_features(race_df)
+                features = self.feature_eng.create_relative_features(features)
+                available_cols = [c for c in base_cols if c in features.columns]
+                X = features[available_cols].values
+                X = np.nan_to_num(X, nan=0.0)
+
+                try:
+                    position_probs = self.predictor.predict_positions(X)
+                    exacta_probs_for_odds = self.predictor.calculate_exacta_probabilities(position_probs)
+                    exacta_dict = {(b.first, b.second): b.probability for b in exacta_probs_for_odds}
+                    # Generate odds with market noise (correlation=0.7 means semi-efficient market)
+                    odds = self.synthetic_odds_gen.generate_correlated_odds(exacta_dict, correlation=0.7)
+                except Exception:
+                    # Fallback to course-based odds
+                    odds = self.synthetic_odds_gen.get_all_odds()
+                # Already have features and position_probs from synthetic odds generation
+                pass
             else:
                 # Use real odds (from payout data)
                 race_payouts = payouts_df[
@@ -199,23 +215,23 @@ class BacktestSimulator:
                 for _, row in race_payouts.iterrows():
                     odds[(int(row["first"]), int(row["second"]))] = row["odds"]
 
-            # Generate features
-            features = self.feature_eng.create_base_features(race_df)
-            features = self.feature_eng.create_relative_features(features)
+                # Generate features
+                features = self.feature_eng.create_base_features(race_df)
+                features = self.feature_eng.create_relative_features(features)
 
-            # Extract only available features
-            available_cols = [c for c in base_cols if c in features.columns]
-            X = features[available_cols].values
+                # Extract only available features
+                available_cols = [c for c in base_cols if c in features.columns]
+                X = features[available_cols].values
 
-            # Fill missing values with zeros
-            X = np.nan_to_num(X, nan=0.0)
+                # Fill missing values with zeros
+                X = np.nan_to_num(X, nan=0.0)
 
-            # Predict
-            try:
-                position_probs = self.predictor.predict_positions(X)
-            except Exception as e:
-                logger.debug(f"Prediction error: {e}")
-                continue
+                # Predict
+                try:
+                    position_probs = self.predictor.predict_positions(X)
+                except Exception as e:
+                    logger.debug(f"Prediction error: {e}")
+                    continue
 
             # Calculate exacta probabilities
             exacta_bets = self.predictor.calculate_exacta_probabilities(position_probs)
