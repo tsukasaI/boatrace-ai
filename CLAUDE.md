@@ -255,6 +255,25 @@ P(boat_i=1st, boat_j=2nd) ≈ P(boat_i=1st) × P(boat_j=2nd) / (1 - P(boat_j=1st
 4. **Stadium Codes**: 1-24 for 24 race venues across Japan
 5. **Data Split**: 2023 train / 2024-H1 val / 2024-H2 test (time-based)
 
+## Data Availability Limitations
+
+### Historical Odds NOT Available
+- **boatrace.jp only keeps recent odds** (~1 week)
+- Cannot scrape historical odds for backtesting
+- Payout CSV contains actual race results (data leakage risk)
+
+### Recommended Workflow
+For accurate backtesting with real odds:
+1. **Daily collection**: Collect today's program data + odds together
+2. **Accumulate over time**: Build up dataset of matched program/odds pairs
+3. **Use synthetic odds for historical backtest**: `--synthetic-odds` flag
+
+### Data Leakage Warning
+Using payout CSV as odds fallback causes data leakage:
+- Payout CSV contains actual race results (which horse won)
+- Results in unrealistic 90%+ hit rates
+- Always use `--synthetic-odds` for honest historical evaluation
+
 ## Backtest Results (Synthetic Odds)
 
 Using synthetic odds with 70% market efficiency and 25% takeout:
@@ -283,18 +302,42 @@ real-time odds scraping from boatrace.jp is required.
 - [x] Integrate real odds with backtester (--use-real-odds flag)
 - [x] JSON storage with date/stadium/race indexing
 
-### Phase 6: Model Improvements
+### Phase 6: Rust Refactoring ← CURRENT
+Migrate core functionality from Python to Rust for performance and single binary deployment.
+
+**Priority order:**
+1. [ ] **Odds scraper in Rust** - Replace Python BeautifulSoup with Rust reqwest + scraper
+2. [ ] **Feature engineering in Rust** - Move pandas logic to Rust (polars or native)
+3. [ ] **CLI in Rust** - Single binary for predictions (no Python dependency)
+4. [ ] **Daily collection in Rust** - Unified data pipeline
+
+**Architecture:**
+```
+rust-api/
+├── src/
+│   ├── main.rs           # HTTP server (existing)
+│   ├── cli.rs            # CLI interface (new)
+│   ├── scraper/          # Odds scraping (new)
+│   │   ├── mod.rs
+│   │   ├── exacta.rs
+│   │   └── trifecta.rs
+│   ├── features/         # Feature engineering (new)
+│   ├── predictor.rs      # ONNX inference (existing)
+│   └── models.rs         # Data types (existing)
+└── Cargo.toml
+```
+
+### Phase 7: Model Improvements
 - [ ] Weather/water condition features (scrape from boatrace.jp)
 - [ ] Quinella (unordered exacta) support
 - [ ] Deep learning models (Transformer, LSTM)
 - [ ] Ensemble methods
-- [ ] Feature importance analysis
 
-### Phase 7: CLI Enhancements
+### Phase 8: Production Features
 - [ ] Auto-collect today's odds before prediction
-- [ ] Batch prediction for multiple races
-- [ ] Historical performance tracking (local SQLite)
+- [ ] Historical performance tracking (SQLite)
 - [ ] Profit/loss summary reports
+- [ ] Telegram/Discord notifications
 
 ## References
 

@@ -156,9 +156,27 @@ expected_value = predicted_probability × odds
 Buy only when expected_value > 1.0
 ```
 
-## Future Extensions
+## Data Limitations
 
-- Quinella (unordered exacta) support
-- Weather/water condition features
-- Deep learning models (Transformer)
-- Profit tracking & performance reports
+**Historical odds are NOT available** on boatrace.jp (only ~1 week retention).
+
+Recommended workflow:
+1. Collect program data + odds daily for same dates
+2. Use `--synthetic-odds` for historical backtesting
+3. Avoid payout CSV fallback (causes data leakage)
+
+## Roadmap
+
+### Phase 6: Rust Refactoring ← CURRENT
+- [ ] Odds scraper in Rust (reqwest + scraper)
+- [ ] Feature engineering in Rust (polars)
+- [ ] CLI in Rust (single binary)
+
+### Phase 7: Model Improvements
+- [ ] Weather/water features
+- [ ] Quinella support
+- [ ] Deep learning models
+
+### Phase 8: Production
+- [ ] Performance tracking (SQLite)
+- [ ] Notifications (Telegram/Discord)
