@@ -37,6 +37,10 @@ boatrace-ai/
 │   │   ├── train.py             # LightGBM training pipeline
 │   │   ├── predictor.py         # Exacta probability & EV calculation
 │   │   └── evaluate.py          # Model evaluation metrics
+│   ├── backtesting/
+│   │   ├── simulator.py         # Backtest simulator with EV strategy
+│   │   ├── metrics.py           # ROI, hit rate, drawdown calculations
+│   │   └── report.py            # CSV/text report generation
 │   └── api/                     # Inference API (Phase 4)
 └── notebooks/                   # Jupyter exploration
 ```
@@ -56,10 +60,12 @@ boatrace-ai/
 4. ✅ Expected value calculation
 5. ⬚ Train and evaluate on full dataset
 
-### Phase 3: Backtesting 🔲 TODO
-1. Validate strategy on historical data
-2. Calculate ROI for "expected value > 1.0" betting
-3. Analyze profitability by stadium, race type, odds range
+### Phase 3: Backtesting ✅ IMPLEMENTED
+1. ✅ PayoutParser extracts odds from raw result files
+2. ✅ BacktestSimulator with EV > 1.0 betting strategy
+3. ✅ Metrics: ROI, hit rate, profit factor, max drawdown
+4. ✅ Analysis by stadium, race type, odds range
+5. ⬚ Run backtest on full dataset
 
 ### Phase 4: Inference API & UI 🔲 TODO
 1. Build REST API in Go or Rust
@@ -101,6 +107,21 @@ uv run python src/models/train.py --historical --optimize --n-trials 50
 
 # Evaluate model
 uv run python src/models/evaluate.py --historical
+```
+
+### Phase 3: Backtesting
+```bash
+# Run backtest with default settings (EV > 1.0)
+uv run python -m src.backtesting.simulator
+
+# Custom EV threshold
+uv run python -m src.backtesting.simulator --threshold 1.1
+
+# More bets per race
+uv run python -m src.backtesting.simulator --max-bets 5
+
+# Use all data (not just test set)
+uv run python -m src.backtesting.simulator --all-data
 ```
 
 ## Data URLs
@@ -147,14 +168,15 @@ P(boat_i=1st, boat_j=2nd) ≈ P(boat_i=1st) × P(boat_j=2nd) / (1 - P(boat_j=1st
 ## TODO
 
 ### Immediate
-- [ ] Wait for data download to complete (~5 hours)
+- [ ] Wait for data download to complete
 - [ ] Run extractor and parser on full dataset
 - [ ] Train model and evaluate baseline accuracy
+- [ ] Run backtest and analyze ROI
 
 ### Short-term
 - [ ] Add weather/water condition features (requires scraping)
-- [ ] Implement backtesting simulation with actual odds
 - [ ] Create Jupyter notebook for data exploration
+- [ ] Tune EV threshold based on backtest results
 
 ### Long-term
 - [ ] Build inference API (Go/Rust)
