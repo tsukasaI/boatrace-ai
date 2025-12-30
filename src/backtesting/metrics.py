@@ -1,7 +1,7 @@
 """
-バックテストメトリクス
+Backtest Metrics
 
-ROI、ヒット率、ドローダウンなどの指標を計算
+Calculate metrics such as ROI, hit rate, drawdown, etc.
 """
 
 from dataclasses import dataclass
@@ -14,24 +14,24 @@ if TYPE_CHECKING:
 
 @dataclass
 class BacktestMetrics:
-    """バックテストの評価指標"""
-    # 基本指標
+    """Backtest evaluation metrics"""
+    # Basic metrics
     total_bets: int
     winning_bets: int
     hit_rate: float
     roi: float
 
-    # 期待値関連
+    # Expected value related
     avg_ev: float
     avg_odds: float
     avg_probability: float
 
-    # リスク指標
+    # Risk metrics
     profit_factor: float
     max_drawdown: int
     max_drawdown_pct: float
 
-    # 勝敗
+    # Win/Loss
     gross_profit: int
     gross_loss: int
     net_profit: int
@@ -39,13 +39,13 @@ class BacktestMetrics:
 
 def calculate_metrics(result: "BacktestResult") -> BacktestMetrics:
     """
-    バックテスト結果からメトリクスを計算
+    Calculate metrics from backtest result
 
     Args:
-        result: バックテスト結果
+        result: Backtest result
 
     Returns:
-        計算されたメトリクス
+        Calculated metrics
     """
     bets = result.bets
 
@@ -66,17 +66,17 @@ def calculate_metrics(result: "BacktestResult") -> BacktestMetrics:
             net_profit=0,
         )
 
-    # 基本指標
+    # Basic metrics
     total_bets = len(bets)
     winning_bets = sum(1 for b in bets if b.won)
     hit_rate = winning_bets / total_bets if total_bets > 0 else 0.0
 
-    # 期待値関連
+    # Expected value related
     avg_ev = np.mean([b.expected_value for b in bets])
     avg_odds = np.mean([b.odds for b in bets])
     avg_probability = np.mean([b.probability for b in bets])
 
-    # 損益計算
+    # Profit/Loss calculation
     profits = [b.profit for b in bets]
     gross_profit = sum(p for p in profits if p > 0)
     gross_loss = abs(sum(p for p in profits if p < 0))
@@ -85,13 +85,13 @@ def calculate_metrics(result: "BacktestResult") -> BacktestMetrics:
     # Profit Factor
     profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
 
-    # ドローダウン計算
+    # Drawdown calculation
     cumulative = np.cumsum(profits)
     peak = np.maximum.accumulate(cumulative)
     drawdown = peak - cumulative
     max_drawdown = int(np.max(drawdown)) if len(drawdown) > 0 else 0
 
-    # ドローダウン率
+    # Drawdown percentage
     max_dd_pct = max_drawdown / result.total_stake if result.total_stake > 0 else 0.0
 
     # ROI
@@ -119,14 +119,14 @@ def analyze_by_dimension(
     dimension: str,
 ) -> dict:
     """
-    指定した次元でベット結果を分析
+    Analyze bet results by specified dimension
 
     Args:
-        bets: ベット記録リスト
-        dimension: 分析次元 ("stadium", "race_no", "odds_range", "date")
+        bets: List of bet records
+        dimension: Analysis dimension ("stadium", "race_no", "odds_range", "date")
 
     Returns:
-        次元ごとの分析結果
+        Analysis results by dimension
     """
     from collections import defaultdict
 
@@ -138,7 +138,7 @@ def analyze_by_dimension(
         elif dimension == "race_no":
             key = bet.race_no
         elif dimension == "odds_range":
-            # オッズをレンジに分類
+            # Classify odds into ranges
             if bet.odds < 5:
                 key = "low (<5)"
             elif bet.odds < 20:
@@ -176,14 +176,14 @@ def calculate_sharpe_ratio(
     risk_free_rate: float = 0.0,
 ) -> float:
     """
-    シャープレシオを計算
+    Calculate Sharpe ratio
 
     Args:
-        bets: ベット記録リスト
-        risk_free_rate: 無リスク金利（デフォルト: 0）
+        bets: List of bet records
+        risk_free_rate: Risk-free rate (default: 0)
 
     Returns:
-        シャープレシオ
+        Sharpe ratio
     """
     if not bets:
         return 0.0

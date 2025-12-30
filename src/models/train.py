@@ -1,7 +1,7 @@
 """
-モデル訓練
+Model Training
 
-LightGBMを使用して着順予測モデルを訓練
+Train finishing position prediction model using LightGBM
 """
 
 import sys
@@ -25,25 +25,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# モデル保存ディレクトリ
+# Model save directory
 MODEL_DIR = PROJECT_ROOT / "models"
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class BoatracePredictor:
-    """競艇予測モデル"""
+    """Boat race prediction model"""
 
     def __init__(self, params: dict = None):
         """
         Args:
-            params: LightGBMのパラメータ
+            params: LightGBM parameters
         """
         self.params = params or self._default_params()
         self.models = None
         self.feature_names = None
 
     def _default_params(self) -> dict:
-        """デフォルトのLightGBMパラメータ"""
+        """Default LightGBM parameters"""
         return {
             "objective": "regression",
             "metric": "rmse",
@@ -67,24 +67,24 @@ class BoatracePredictor:
         feature_names: list = None,
     ) -> None:
         """
-        モデルを訓練
+        Train the model
 
         Args:
-            X_train: 訓練特徴量 (n_samples, n_features)
-            y_train: 訓練ラベル (n_samples, 6) - 各着順の確率
-            X_val: 検証特徴量
-            y_val: 検証ラベル
-            feature_names: 特徴量名のリスト
+            X_train: Training features (n_samples, n_features)
+            y_train: Training labels (n_samples, 6) - probability for each position
+            X_val: Validation features
+            y_val: Validation labels
+            feature_names: List of feature names
         """
         self.feature_names = feature_names
 
-        # 6つの着順それぞれに対するモデルを訓練
+        # Train a model for each of the 6 finishing positions
         self.models = []
 
         for pos in range(6):
             logger.info(f"Training model for position {pos + 1}...")
 
-            # LightGBMデータセット
+            # LightGBM dataset
             train_data = lgb.Dataset(
                 X_train, label=y_train[:, pos],
                 feature_name=feature_names,
@@ -100,7 +100,7 @@ class BoatracePredictor:
                 val_data = None
                 callbacks = None
 
-            # 訓練
+            # Training
             model = lgb.train(
                 self.params,
                 train_data,
@@ -114,13 +114,13 @@ class BoatracePredictor:
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """
-        着順確率を予測
+        Predict finishing position probabilities
 
         Args:
-            X: 特徴量 (n_samples, n_features)
+            X: Features (n_samples, n_features)
 
         Returns:
-            確率 (n_samples, 6) - 各着順の予測確率
+            Probabilities (n_samples, 6) - predicted probability for each position
         """
         if self.models is None:
             raise ValueError("Model not trained. Call train() first.")
@@ -130,10 +130,10 @@ class BoatracePredictor:
         for pos, model in enumerate(self.models):
             predictions[:, pos] = model.predict(X)
 
-        # 確率に変換（0-1に正規化）
+        # Convert to probability (normalize to 0-1)
         predictions = np.clip(predictions, 0, 1)
 
-        # 行ごとに正規化（合計が1になるように）
+        # Normalize each row (so that sum equals 1)
         row_sums = predictions.sum(axis=1, keepdims=True)
         row_sums = np.where(row_sums == 0, 1, row_sums)
         predictions = predictions / row_sums
@@ -141,7 +141,7 @@ class BoatracePredictor:
         return predictions
 
     def save(self, path: Path = None) -> None:
-        """モデルを保存"""
+        """Save the model"""
         path = path or MODEL_DIR / "boatrace_model.pkl"
         with open(path, "wb") as f:
             pickle.dump({
@@ -152,7 +152,7 @@ class BoatracePredictor:
         logger.info(f"Model saved to {path}")
 
     def load(self, path: Path = None) -> None:
-        """モデルを読み込み"""
+        """Load the model"""
         path = path or MODEL_DIR / "boatrace_model.pkl"
         with open(path, "rb") as f:
             data = pickle.load(f)
@@ -170,17 +170,17 @@ def optimize_hyperparameters(
     n_trials: int = 50,
 ) -> dict:
     """
-    Optunaでハイパーパラメータを最適化
+    Optimize hyperparameters using Optuna
 
     Args:
-        X_train: 訓練特徴量
-        y_train: 訓練ラベル
-        X_val: 検証特徴量
-        y_val: 検証ラベル
-        n_trials: 試行回数
+        X_train: Training features
+        y_train: Training labels
+        X_val: Validation features
+        y_val: Validation labels
+        n_trials: Number of trials
 
     Returns:
-        最適なパラメータ
+        Optimal parameters
     """
     def objective(trial):
         params = {
@@ -198,7 +198,7 @@ def optimize_hyperparameters(
             "early_stopping_rounds": 50,
         }
 
-        # 1位予測のモデルで評価
+        # Evaluate using the 1st place prediction model
         train_data = lgb.Dataset(X_train, label=y_train[:, 0])
         val_data = lgb.Dataset(X_val, label=y_val[:, 0], reference=train_data)
 
@@ -209,7 +209,7 @@ def optimize_hyperparameters(
             callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)],
         )
 
-        # 検証データでの予測
+        # Prediction on validation data
         y_pred = model.predict(X_val)
         rmse = np.sqrt(np.mean((y_pred - y_val[:, 0]) ** 2))
 
@@ -230,15 +230,15 @@ def train_model(
     n_trials: int = 50,
 ) -> BoatracePredictor:
     """
-    モデルを訓練するメイン関数
+    Main function to train the model
 
     Args:
-        use_historical: 履歴特徴量を使用するか
-        optimize: ハイパーパラメータ最適化を行うか
-        n_trials: 最適化の試行回数
+        use_historical: Whether to use historical features
+        optimize: Whether to perform hyperparameter optimization
+        n_trials: Number of optimization trials
 
     Returns:
-        訓練済みモデル
+        Trained model
     """
     logger.info("Building dataset...")
     builder = DatasetBuilder()
@@ -254,7 +254,7 @@ def train_model(
     logger.info(f"Val samples: {len(X_val)}")
     logger.info(f"Features: {len(feature_names)}")
 
-    # ハイパーパラメータ最適化
+    # Hyperparameter optimization
     if optimize:
         logger.info("Optimizing hyperparameters...")
         best_params = optimize_hyperparameters(
@@ -264,18 +264,18 @@ def train_model(
     else:
         params = None
 
-    # モデル訓練
+    # Model training
     model = BoatracePredictor(params=params)
     model.train(X_train, y_train, X_val, y_val, feature_names)
 
-    # 保存
+    # Save
     model.save()
 
     return model
 
 
 def main():
-    """メイン処理"""
+    """Main process"""
     import argparse
 
     parser = argparse.ArgumentParser(description="Train boatrace prediction model")

@@ -40,9 +40,13 @@ impl Predictor {
     /// Predict position probabilities for each boat
     ///
     /// Returns 6 boats × 6 positions probability matrix
-    pub fn predict_positions(&mut self, entries: &[RacerEntry]) -> Vec<PositionProb> {
+    /// Returns Err if ONNX inference fails
+    pub fn predict_positions(
+        &mut self,
+        entries: &[RacerEntry],
+    ) -> Result<Vec<PositionProb>, Box<dyn std::error::Error>> {
         if entries.len() != 6 {
-            return vec![];
+            return Err("Exactly 6 entries required".into());
         }
 
         // Create feature matrix (6 boats × 14 features)
@@ -53,17 +57,12 @@ impl Predictor {
 
         for (pos_idx, session) in self.sessions.iter_mut().enumerate() {
             let input_vec: Vec<f32> = features.iter().map(|&x| x as f32).collect();
-            let input_tensor = Tensor::from_array(([6usize, NUM_FEATURES], input_vec))
-                .expect("Failed to create input tensor");
+            let input_tensor = Tensor::from_array(([6usize, NUM_FEATURES], input_vec))?;
 
-            let outputs = session
-                .run(ort::inputs!["input" => input_tensor])
-                .expect("Failed to run inference");
+            let outputs = session.run(ort::inputs!["input" => input_tensor])?;
 
             // Extract predictions for each boat
-            let (_, output_data) = outputs[0]
-                .try_extract_tensor::<f32>()
-                .expect("Failed to extract output tensor");
+            let (_, output_data) = outputs[0].try_extract_tensor::<f32>()?;
 
             for (boat_idx, value) in output_data.iter().enumerate() {
                 if boat_idx < 6 {
@@ -76,14 +75,14 @@ impl Predictor {
         let probs = self.softmax_normalize(position_probs);
 
         // Build result
-        entries
+        Ok(entries
             .iter()
             .enumerate()
             .map(|(i, e)| PositionProb {
                 boat_no: e.boat_no,
                 probs: probs[i],
             })
-            .collect()
+            .collect())
     }
 
     /// Extract features from race entries

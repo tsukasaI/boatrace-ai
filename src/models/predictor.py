@@ -1,7 +1,7 @@
 """
-予測・期待値計算
+Prediction and Expected Value Calculation
 
-モデルの予測結果から2連単確率と期待値を計算
+Calculate exacta (2-consecutive) probabilities and expected values from model predictions
 """
 
 import sys
@@ -19,38 +19,38 @@ from src.models.features import FeatureEngineering, get_feature_columns
 
 @dataclass
 class ExactaBet:
-    """2連単の賭け情報"""
-    first: int       # 1着の艇番 (1-6)
-    second: int      # 2着の艇番 (1-6)
+    """Exacta bet information"""
+    first: int       # 1st place boat number (1-6)
+    second: int      # 2nd place boat number (1-6)
     probability: float
     odds: float = 0.0
     expected_value: float = 0.0
 
 
 class RacePredictor:
-    """レース予測クラス"""
+    """Race prediction class"""
 
     def __init__(self, model: BoatracePredictor = None):
         """
         Args:
-            model: 訓練済みモデル
+            model: Trained model
         """
         self.model = model or BoatracePredictor()
         self.feature_eng = FeatureEngineering()
 
     def load_model(self, path: Path = None) -> None:
-        """モデルを読み込み"""
+        """Load model"""
         self.model.load(path)
 
     def predict_positions(self, X: np.ndarray) -> np.ndarray:
         """
-        着順確率を予測
+        Predict finishing position probabilities
 
         Args:
-            X: 特徴量 (6, n_features) - レース内の6艇分
+            X: Features (6, n_features) - for 6 boats in a race
 
         Returns:
-            確率 (6, 6) - 各艇の各着順確率
+            Probabilities (6, 6) - each boat's probability for each position
         """
         return self.model.predict(X)
 
@@ -59,30 +59,30 @@ class RacePredictor:
         position_probs: np.ndarray,
     ) -> List[ExactaBet]:
         """
-        2連単確率を計算
+        Calculate exacta probabilities
 
         Args:
-            position_probs: 着順確率 (6, 6) - [艇番, 着順]
+            position_probs: Position probabilities (6, 6) - [boat_no, position]
 
         Returns:
-            30通りの2連単賭け情報リスト
+            List of 30 exacta bet information
         """
         exacta_bets = []
 
         for first in range(6):
-            p_first = position_probs[first, 0]  # 1着確率
+            p_first = position_probs[first, 0]  # 1st place probability
 
             for second in range(6):
                 if first == second:
                     continue
 
-                p_second = position_probs[second, 1]  # 2着確率
+                p_second = position_probs[second, 1]  # 2nd place probability
 
-                # 条件付き確率: P(B=2nd | A=1st)
-                # ≈ P(B=2nd) / (1 - P(B=1st))
+                # Conditional probability: P(B=2nd | A=1st)
+                # Approx P(B=2nd) / (1 - P(B=1st))
                 p_second_given_first = p_second / max(1 - position_probs[second, 0], 0.01)
 
-                # 2連単確率
+                # Exacta probability
                 p_exacta = p_first * p_second_given_first
 
                 exacta_bets.append(ExactaBet(
@@ -91,7 +91,7 @@ class RacePredictor:
                     probability=p_exacta,
                 ))
 
-        # 確率で降順ソート
+        # Sort by probability in descending order
         exacta_bets.sort(key=lambda x: x.probability, reverse=True)
 
         return exacta_bets
@@ -102,14 +102,14 @@ class RacePredictor:
         odds: dict,
     ) -> List[ExactaBet]:
         """
-        期待値を計算
+        Calculate expected values
 
         Args:
-            exacta_bets: 2連単賭け情報リスト
-            odds: オッズ辞書 {(first, second): odds}
+            exacta_bets: List of exacta bet information
+            odds: Odds dictionary {(first, second): odds}
 
         Returns:
-            期待値を追加した2連単賭け情報リスト
+            List of exacta bet information with expected values added
         """
         for bet in exacta_bets:
             key = (bet.first, bet.second)
@@ -125,14 +125,14 @@ class RacePredictor:
         threshold: float = 1.0,
     ) -> List[ExactaBet]:
         """
-        期待値がしきい値を超える賭けを取得
+        Get bets with expected value exceeding threshold
 
         Args:
-            exacta_bets: 2連単賭け情報リスト
-            threshold: 期待値のしきい値
+            exacta_bets: List of exacta bet information
+            threshold: Expected value threshold
 
         Returns:
-            バリューベットのリスト
+            List of value bets
         """
         return [bet for bet in exacta_bets if bet.expected_value > threshold]
 
@@ -142,22 +142,22 @@ class RacePredictor:
         odds: dict = None,
     ) -> Tuple[np.ndarray, List[ExactaBet]]:
         """
-        レース予測のメイン関数
+        Main function for race prediction
 
         Args:
-            race_features: 特徴量 (6, n_features)
-            odds: オッズ辞書
+            race_features: Features (6, n_features)
+            odds: Odds dictionary
 
         Returns:
-            (着順確率, 2連単賭け情報リスト)
+            (Position probabilities, List of exacta bet information)
         """
-        # 着順確率を予測
+        # Predict position probabilities
         position_probs = self.predict_positions(race_features)
 
-        # 2連単確率を計算
+        # Calculate exacta probabilities
         exacta_bets = self.calculate_exacta_probabilities(position_probs)
 
-        # 期待値を計算
+        # Calculate expected values
         if odds:
             exacta_bets = self.calculate_expected_values(exacta_bets, odds)
 
@@ -170,21 +170,21 @@ def format_prediction_result(
     top_n: int = 10,
 ) -> str:
     """
-    予測結果を整形して文字列で返す
+    Format prediction results and return as string
 
     Args:
-        position_probs: 着順確率 (6, 6)
-        exacta_bets: 2連単賭け情報リスト
-        top_n: 表示する上位件数
+        position_probs: Position probabilities (6, 6)
+        exacta_bets: List of exacta bet information
+        top_n: Number of top entries to display
 
     Returns:
-        整形済み文字列
+        Formatted string
     """
     lines = []
 
-    # 着順確率
-    lines.append("=== 着順確率 ===")
-    lines.append("艇番  1着    2着    3着    4着    5着    6着")
+    # Position probabilities
+    lines.append("=== Position Probabilities ===")
+    lines.append("Boat  1st    2nd    3rd    4th    5th    6th")
     lines.append("-" * 50)
 
     for boat in range(6):
@@ -194,9 +194,9 @@ def format_prediction_result(
 
     lines.append("")
 
-    # 2連単予測
-    lines.append(f"=== 2連単 TOP{top_n} ===")
-    lines.append("順位  組み合わせ  確率    オッズ   期待値")
+    # Exacta prediction
+    lines.append(f"=== Exacta TOP{top_n} ===")
+    lines.append("Rank  Combination  Prob    Odds     EV")
     lines.append("-" * 50)
 
     for i, bet in enumerate(exacta_bets[:top_n]):
@@ -207,15 +207,15 @@ def format_prediction_result(
             f"{bet.probability:.1%}   {odds_str:>6}   {ev_str:>6}"
         )
 
-    # バリューベット
+    # Value bets
     value_bets = [b for b in exacta_bets if b.expected_value > 1.0]
     if value_bets:
         lines.append("")
-        lines.append("=== バリューベット (期待値 > 1.0) ===")
+        lines.append("=== Value Bets (EV > 1.0) ===")
         for bet in value_bets:
             lines.append(
-                f"  {bet.first}-{bet.second}: 確率={bet.probability:.1%}, "
-                f"オッズ={bet.odds:.1f}, 期待値={bet.expected_value:.2f}"
+                f"  {bet.first}-{bet.second}: Prob={bet.probability:.1%}, "
+                f"Odds={bet.odds:.1f}, EV={bet.expected_value:.2f}"
             )
 
     return "\n".join(lines)

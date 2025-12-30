@@ -1,28 +1,28 @@
 """
-合成オッズ生成モジュール
+Synthetic Odds Generation Module
 
-過去データからコース別の2連単確率を計算し、
-市場オッズを模擬する
+Calculate exacta probabilities by course from historical data
+and simulate market odds
 """
 
 import numpy as np
 import pandas as pd
 from pathlib import Path
 
-# 歴史的なコース別1着率（ボートレースの一般的な傾向）
-# コース1が圧倒的に有利
+# Historical win rate by course (general tendency in boat racing)
+# Course 1 has overwhelming advantage
 HISTORICAL_WIN_RATE = {
-    1: 0.55,  # 1コース: 約55%
-    2: 0.14,  # 2コース: 約14%
-    3: 0.12,  # 3コース: 約12%
-    4: 0.10,  # 4コース: 約10%
-    5: 0.06,  # 5コース: 約6%
-    6: 0.03,  # 6コース: 約3%
+    1: 0.55,  # Course 1: approx. 55%
+    2: 0.14,  # Course 2: approx. 14%
+    3: 0.12,  # Course 3: approx. 12%
+    4: 0.10,  # Course 4: approx. 10%
+    5: 0.06,  # Course 5: approx. 6%
+    6: 0.03,  # Course 6: approx. 3%
 }
 
-# 2着率（1着以外からの相対確率）
+# 2nd place rate (relative probability from non-1st positions)
 HISTORICAL_SECOND_RATE = {
-    1: 0.20,  # 1コースが2着になる確率
+    1: 0.20,  # Probability of course 1 finishing 2nd
     2: 0.22,
     3: 0.20,
     4: 0.18,
@@ -32,28 +32,28 @@ HISTORICAL_SECOND_RATE = {
 
 
 class SyntheticOddsGenerator:
-    """合成オッズ生成器"""
+    """Synthetic odds generator"""
 
     def __init__(self, margin: float = 0.25):
         """
         Args:
-            margin: 控除率（テラ銭）。25%がボートレースの標準
+            margin: Commission rate (takeout). 25% is standard for boat racing
         """
         self.margin = margin
         self.exacta_probs = self._calculate_exacta_probs()
 
     def _calculate_exacta_probs(self) -> dict:
         """
-        コース組み合わせごとの2連単確率を計算
+        Calculate exacta probability for each course combination
 
-        P(1st=i, 2nd=j) ≈ P(1st=i) × P(2nd=j | 1st≠j)
+        P(1st=i, 2nd=j) = P(1st=i) x P(2nd=j | 1st!=j)
         """
         probs = {}
 
         for first in range(1, 7):
             p_first = HISTORICAL_WIN_RATE[first]
 
-            # 1着がfirstの場合、残りから2着を選ぶ
+            # When first place is 'first', select 2nd place from remaining
             remaining_second_total = sum(
                 HISTORICAL_SECOND_RATE[s] for s in range(1, 7) if s != first
             )
@@ -62,13 +62,13 @@ class SyntheticOddsGenerator:
                 if first == second:
                     continue
 
-                # 条件付き確率で2着を計算
+                # Calculate 2nd place using conditional probability
                 p_second_given = HISTORICAL_SECOND_RATE[second] / remaining_second_total
                 p_exacta = p_first * p_second_given
 
                 probs[(first, second)] = p_exacta
 
-        # 正規化（合計が1になるように）
+        # Normalize (so total equals 1)
         total = sum(probs.values())
         probs = {k: v / total for k, v in probs.items()}
 
@@ -76,22 +76,22 @@ class SyntheticOddsGenerator:
 
     def get_odds(self, first: int, second: int) -> float:
         """
-        指定した組み合わせのオッズを取得
+        Get odds for specified combination
 
         Args:
-            first: 1着の艇番
-            second: 2着の艇番
+            first: Boat number for 1st place
+            second: Boat number for 2nd place
 
         Returns:
-            オッズ（配当倍率）
+            Odds (payout multiplier)
         """
         if first == second or first < 1 or first > 6 or second < 1 or second > 6:
             return 0.0
 
         prob = self.exacta_probs.get((first, second), 0.001)
 
-        # オッズ = 1 / (確率 × (1 - 控除率))
-        # 控除率25%の場合、還元率は75%
+        # Odds = 1 / (probability x (1 - commission rate))
+        # With 25% commission, payout rate is 75%
         fair_odds = 1.0 / prob
         actual_odds = fair_odds * (1 - self.margin)
 
@@ -99,10 +99,10 @@ class SyntheticOddsGenerator:
 
     def get_all_odds(self) -> dict:
         """
-        全30組み合わせのオッズを取得
+        Get odds for all 30 combinations
 
         Returns:
-            {(first, second): odds} の辞書
+            Dictionary of {(first, second): odds}
         """
         return {
             (f, s): self.get_odds(f, s)
@@ -113,32 +113,32 @@ class SyntheticOddsGenerator:
 
     def get_race_odds(self, race_df: pd.DataFrame = None) -> dict:
         """
-        レースごとのオッズを取得
+        Get odds for each race
 
-        現在は固定オッズを返すが、将来的にはレース特性
-        （選手クラス、モーター性能など）を考慮可能
+        Currently returns fixed odds, but can consider race characteristics
+        (racer class, motor performance, etc.) in the future
 
         Returns:
-            {(first, second): odds} の辞書
+            Dictionary of {(first, second): odds}
         """
-        # TODO: レース特性を考慮したオッズ調整
+        # TODO: Adjust odds based on race characteristics
         return self.get_all_odds()
 
 
 def calculate_historical_exacta_rates(results_df: pd.DataFrame) -> dict:
     """
-    実際の結果データから2連単の出現率を計算
+    Calculate exacta occurrence rate from actual result data
 
     Args:
-        results_df: 結果データフレーム
+        results_df: Results dataframe
 
     Returns:
-        {(first, second): rate} の辞書
+        Dictionary of {(first, second): rate}
     """
     exacta_counts = {}
     total_races = 0
 
-    # レースごとにグループ化
+    # Group by race
     race_groups = results_df.groupby(["date", "stadium_code", "race_no"])
 
     for _, race_df in race_groups:
@@ -158,14 +158,14 @@ def calculate_historical_exacta_rates(results_df: pd.DataFrame) -> dict:
         exacta_counts[key] = exacta_counts.get(key, 0) + 1
         total_races += 1
 
-    # 確率に変換
+    # Convert to probability
     if total_races > 0:
         return {k: v / total_races for k, v in exacta_counts.items()}
     return {}
 
 
 if __name__ == "__main__":
-    # テスト
+    # Test
     generator = SyntheticOddsGenerator()
 
     print("Synthetic Exacta Odds (25% margin):")
@@ -173,7 +173,7 @@ if __name__ == "__main__":
 
     all_odds = generator.get_all_odds()
 
-    # オッズが低い順（人気順）にソート
+    # Sort by odds ascending (popularity order)
     sorted_odds = sorted(all_odds.items(), key=lambda x: x[1])
 
     for (first, second), odds in sorted_odds[:10]:

@@ -1,8 +1,8 @@
 """
 ONNX Export Script
 
-LightGBMモデルをONNX形式にエクスポート
-Rust APIで使用するため
+Export LightGBM model to ONNX format
+For use with Rust API
 """
 
 import sys
@@ -36,21 +36,21 @@ def export_to_onnx(
     n_features: int = 14,
 ) -> list[Path]:
     """
-    LightGBMモデルをONNXにエクスポート
+    Export LightGBM model to ONNX
 
     Args:
-        model_path: 入力モデルパス (.pkl)
-        output_dir: 出力ディレクトリ
-        n_features: 特徴量の数
+        model_path: Input model path (.pkl)
+        output_dir: Output directory
+        n_features: Number of features
 
     Returns:
-        エクスポートされたONNXファイルのパスリスト
+        List of exported ONNX file paths
     """
     model_path = model_path or MODEL_DIR / "boatrace_model.pkl"
     output_dir = output_dir or ONNX_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # モデルを読み込み
+    # Load model
     logger.info(f"Loading model from {model_path}")
     predictor = BoatracePredictor()
     predictor.load(model_path)
@@ -58,7 +58,7 @@ def export_to_onnx(
     if predictor.models is None:
         raise ValueError("No models found in predictor")
 
-    # 入力の型定義
+    # Define input type
     initial_type = [("input", FloatTensorType([None, n_features]))]
 
     exported_paths = []
@@ -67,20 +67,20 @@ def export_to_onnx(
         output_path = output_dir / f"position_{i + 1}.onnx"
         logger.info(f"Exporting position {i + 1} model to {output_path}")
 
-        # LightGBMからONNXに変換
+        # Convert from LightGBM to ONNX
         onnx_model = convert_lightgbm(
             model,
             initial_types=initial_type,
             target_opset=12,
         )
 
-        # モデルを保存
+        # Save model
         onnx.save_model(onnx_model, str(output_path))
         exported_paths.append(output_path)
 
         logger.info(f"  Saved: {output_path}")
 
-    # メタデータファイルを作成
+    # Create metadata file
     metadata_path = output_dir / "metadata.json"
     import json
     metadata = {
@@ -101,18 +101,18 @@ def verify_onnx_models(
     n_features: int = 14,
 ) -> bool:
     """
-    エクスポートしたONNXモデルを検証
+    Verify exported ONNX models
 
     Args:
-        onnx_dir: ONNXモデルのディレクトリ
-        n_features: 特徴量の数
+        onnx_dir: Directory containing ONNX models
+        n_features: Number of features
 
     Returns:
-        検証成功かどうか
+        Whether verification succeeded
     """
     onnx_dir = onnx_dir or ONNX_DIR
 
-    # テスト入力を作成
+    # Create test input
     test_input = np.random.randn(6, n_features).astype(np.float32)
 
     logger.info("Verifying ONNX models...")
@@ -124,11 +124,11 @@ def verify_onnx_models(
             logger.error(f"Model not found: {onnx_path}")
             return False
 
-        # ONNXモデルを検証
+        # Verify ONNX model
         onnx_model = onnx.load(str(onnx_path))
         onnx.checker.check_model(onnx_model)
 
-        # 推論テスト
+        # Inference test
         session = ort.InferenceSession(str(onnx_path))
         input_name = session.get_inputs()[0].name
         output = session.run(None, {input_name: test_input})
@@ -146,25 +146,25 @@ def compare_predictions(
     n_samples: int = 100,
 ) -> dict:
     """
-    LightGBMとONNXの予測結果を比較
+    Compare predictions between LightGBM and ONNX
 
     Args:
-        model_path: LightGBMモデルパス
-        onnx_dir: ONNXモデルのディレクトリ
-        n_features: 特徴量の数
-        n_samples: テストサンプル数
+        model_path: LightGBM model path
+        onnx_dir: Directory containing ONNX models
+        n_features: Number of features
+        n_samples: Number of test samples
 
     Returns:
-        比較結果
+        Comparison results
     """
     model_path = model_path or MODEL_DIR / "boatrace_model.pkl"
     onnx_dir = onnx_dir or ONNX_DIR
 
-    # LightGBMモデルを読み込み
+    # Load LightGBM model
     predictor = BoatracePredictor()
     predictor.load(model_path)
 
-    # テスト入力を作成
+    # Create test input
     test_input = np.random.randn(n_samples, n_features).astype(np.float32)
 
     results = {"max_diff": [], "mean_diff": []}
@@ -172,16 +172,16 @@ def compare_predictions(
     logger.info(f"Comparing predictions on {n_samples} samples...")
 
     for i in range(6):
-        # LightGBM予測
+        # LightGBM prediction
         lgb_pred = predictor.models[i].predict(test_input)
 
-        # ONNX予測
+        # ONNX prediction
         onnx_path = onnx_dir / f"position_{i + 1}.onnx"
         session = ort.InferenceSession(str(onnx_path))
         input_name = session.get_inputs()[0].name
         onnx_pred = session.run(None, {input_name: test_input})[0].flatten()
 
-        # 差分を計算
+        # Calculate difference
         diff = np.abs(lgb_pred - onnx_pred)
         max_diff = diff.max()
         mean_diff = diff.mean()
@@ -224,7 +224,7 @@ def main():
     model_path = Path(args.model) if args.model else None
     output_dir = Path(args.output) if args.output else None
 
-    # エクスポート
+    # Export
     exported_paths = export_to_onnx(
         model_path=model_path,
         output_dir=output_dir,
@@ -233,11 +233,11 @@ def main():
 
     logger.info(f"Exported {len(exported_paths)} models")
 
-    # 検証
+    # Verify
     if args.verify:
         verify_onnx_models(output_dir, args.features)
 
-    # 比較
+    # Compare
     if args.compare:
         compare_predictions(model_path, output_dir, args.features)
 

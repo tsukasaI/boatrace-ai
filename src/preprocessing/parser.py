@@ -1,7 +1,7 @@
 """
-競艇データパーサー
+Boat Race Data Parser
 
-固定長テキストファイルを解析してCSVに変換
+Parses fixed-width text files and converts them to CSV format.
 """
 
 import re
@@ -24,9 +24,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def normalize_fullwidth_numbers(text: str) -> str:
+    """Convert fullwidth digits to halfwidth."""
+    trans_table = str.maketrans("０１２３４５６７８９", "0123456789")
+    return text.translate(trans_table)
+
+
 @dataclass
 class RaceInfo:
-    """レース情報"""
+    """Race information."""
     date: str
     stadium_code: int
     stadium_name: str
@@ -34,142 +40,137 @@ class RaceInfo:
     race_type: str
     distance: int
     title: str = ""
-    day: int = 0  # 開催何日目
+    day: int = 0  # Day of the event
 
 
 @dataclass
 class RacerEntry:
-    """選手エントリー情報（番組表）"""
-    boat_no: int          # 艇番（1-6）
-    racer_id: int         # 登録番号
-    racer_name: str       # 選手名
-    age: int              # 年齢
-    branch: str           # 支部
-    weight: int           # 体重
-    racer_class: str      # 級別（A1, A2, B1, B2）
-    
-    # 勝率
-    national_win_rate: float   # 全国勝率
-    national_in2_rate: float   # 全国2連率
-    local_win_rate: float      # 当地勝率
-    local_in2_rate: float      # 当地2連率
-    
-    # モーター・ボート
-    motor_no: int              # モーター番号
-    motor_in2_rate: float      # モーター2連率
-    boat_no_equip: int         # ボート番号
-    boat_in2_rate: float       # ボート2連率
+    """Racer entry information (from race program)."""
+    boat_no: int          # Boat number (1-6)
+    racer_id: int         # Registration number
+    racer_name: str       # Racer name
+    age: int              # Age
+    branch: str           # Branch/region
+    weight: int           # Weight (kg)
+    racer_class: str      # Class (A1, A2, B1, B2)
+
+    # Win rates
+    national_win_rate: float   # National win rate
+    national_in2_rate: float   # National top-2 finish rate
+    local_win_rate: float      # Local venue win rate
+    local_in2_rate: float      # Local venue top-2 finish rate
+
+    # Motor and boat
+    motor_no: int              # Motor number
+    motor_in2_rate: float      # Motor top-2 finish rate
+    boat_no_equip: int         # Boat number
+    boat_in2_rate: float       # Boat top-2 finish rate
 
 
 @dataclass
 class RaceResult:
-    """レース結果"""
-    boat_no: int          # 艇番
-    racer_id: int         # 登録番号
-    rank: int             # 着順（0=失格等）
-    race_time: str        # レースタイム
-    course: int           # 進入コース
-    start_timing: float   # スタートタイミング
+    """Race result."""
+    boat_no: int          # Boat number
+    racer_id: int         # Registration number
+    rank: int             # Finishing position (0 = disqualified)
+    race_time: str        # Race time
+    course: int           # Starting course
+    start_timing: float   # Start timing
 
 
 @dataclass
 class RacePayouts:
-    """レース払戻金"""
+    """Race payouts."""
     date: str
     stadium_code: int
     race_no: int
-    win: dict              # 単勝 {boat: payout}
-    place: dict            # 複勝 {boat: payout}
-    exacta: dict           # 2連単 {(1st, 2nd): payout}
-    quinella: dict         # 2連複 {(a, b): payout}
-    wide: dict             # ワイド {(a, b): payout}
-    trifecta: dict         # 3連単 {(1st, 2nd, 3rd): payout}
-    trio: dict             # 3連複 {(a, b, c): payout}
+    win: dict              # Win {boat: payout}
+    place: dict            # Place {boat: payout}
+    exacta: dict           # Exacta {(1st, 2nd): payout}
+    quinella: dict         # Quinella {(a, b): payout}
+    wide: dict             # Wide {(a, b): payout}
+    trifecta: dict         # Trifecta {(1st, 2nd, 3rd): payout}
+    trio: dict             # Trio {(a, b, c): payout}
 
 
 class ProgramParser:
-    """番組表パーサー"""
-    
-    # レース場識別パターン（例: "22BBGN" → 福岡）
+    """Race program parser."""
+
+    # Stadium identifier pattern (e.g., "22BBGN" -> Fukuoka)
     STADIUM_PATTERN = re.compile(r'^(\d{2})BBGN')
-    
-    # レース番号パターン（例: "１Ｒ 予選"）
+
+    # Race number pattern (e.g., "１Ｒ 予選")
     RACE_PATTERN = re.compile(r'[　\s]*([０-９\d]+)Ｒ\s*(.*?)\s*Ｈ(\d+)')
-    
-    # 選手行パターン
+
+    # Racer line pattern
     RACER_PATTERN = re.compile(
-        r'^(\d)\s+'           # 艇番
-        r'(\d{4})'            # 登録番号
-        r'(.{4})'             # 選手名（4文字固定）
-        r'(\d{2})'            # 年齢
-        r'(.{2})'             # 支部
-        r'(\d{2})'            # 体重
-        r'([AB][12])'         # 級別
-        r'\s*(\d+\.\d+)'      # 全国勝率
-        r'\s*(\d+\.\d+)'      # 全国2連率
-        r'\s*(\d+\.\d+)'      # 当地勝率
-        r'\s*(\d+\.\d+)'      # 当地2連率
-        r'\s*(\d+)'           # モーター番号
-        r'\s*(\d+\.\d+)'      # モーター2連率
-        r'\s*(\d+)'           # ボート番号
-        r'\s*(\d+\.\d+)'      # ボート2連率
+        r'^(\d)\s+'           # Boat number
+        r'(\d{4})'            # Registration number
+        r'(.{4})'             # Racer name (4 chars fixed)
+        r'(\d{2})'            # Age
+        r'(.{2})'             # Branch
+        r'(\d{2})'            # Weight
+        r'([AB][12])'         # Class
+        r'\s*(\d+\.\d+)'      # National win rate
+        r'\s*(\d+\.\d+)'      # National top-2 rate
+        r'\s*(\d+\.\d+)'      # Local win rate
+        r'\s*(\d+\.\d+)'      # Local top-2 rate
+        r'\s*(\d+)'           # Motor number
+        r'\s*(\d+\.\d+)'      # Motor top-2 rate
+        r'\s*(\d+)'           # Boat number
+        r'\s*(\d+\.\d+)'      # Boat top-2 rate
     )
     
     def __init__(self, encoding: str = "cp932"):
         self.encoding = encoding
-    
-    def _normalize_number(self, text: str) -> str:
-        """全角数字を半角に変換"""
-        trans_table = str.maketrans("０１２３４５６７８９", "0123456789")
-        return text.translate(trans_table)
-    
+
     def parse_file(self, file_path: Path) -> Generator[tuple[RaceInfo, list[RacerEntry]], None, None]:
         """
-        番組表ファイルをパース
-        
+        Parse race program file.
+
         Yields:
-            (RaceInfo, list[RacerEntry]) のタプル
+            Tuple of (RaceInfo, list[RacerEntry])
         """
         try:
             content = file_path.read_text(encoding=self.encoding)
         except UnicodeDecodeError:
             content = file_path.read_text(encoding="utf-8", errors="ignore")
-        
+
         lines = content.split("\n")
-        
-        # ファイル名から日付を取得（programs_YYYYMMDD.txt）
+
+        # Extract date from filename (programs_YYYYMMDD.txt)
         date_str = file_path.stem.split("_")[-1]
-        
+
         current_stadium = None
         current_race = None
         current_racers = []
-        
+
         i = 0
         while i < len(lines):
             line = lines[i]
-            
-            # レース場識別
+
+            # Stadium identification
             stadium_match = self.STADIUM_PATTERN.match(line)
             if stadium_match:
                 stadium_code = int(stadium_match.group(1))
                 current_stadium = {
                     "code": stadium_code,
-                    "name": STADIUM_CODES.get(stadium_code, "不明")
+                    "name": STADIUM_CODES.get(stadium_code, "Unknown")
                 }
                 i += 1
                 continue
-            
-            # レース情報
+
+            # Race information
             race_match = self.RACE_PATTERN.search(line)
             if race_match and current_stadium:
-                # 前のレースがあれば出力
+                # Yield previous race if exists
                 if current_race and current_racers:
                     yield current_race, current_racers
-                
-                race_no = int(self._normalize_number(race_match.group(1)))
+
+                race_no = int(normalize_fullwidth_numbers(race_match.group(1)))
                 race_type = race_match.group(2).strip()
                 distance = int(race_match.group(3))
-                
+
                 current_race = RaceInfo(
                     date=date_str,
                     stadium_code=current_stadium["code"],
@@ -181,8 +182,8 @@ class ProgramParser:
                 current_racers = []
                 i += 1
                 continue
-            
-            # 選手情報（簡易パース）
+
+            # Racer information (simple parse)
             if current_race and line.strip() and line[0].isdigit():
                 try:
                     racer = self._parse_racer_line(line)
@@ -190,16 +191,16 @@ class ProgramParser:
                         current_racers.append(racer)
                 except Exception as e:
                     logger.debug(f"Parse error at line {i}: {e}")
-            
+
             i += 1
-        
-        # 最後のレース
+
+        # Last race
         if current_race and current_racers:
             yield current_race, current_racers
     
     def _parse_racer_line(self, line: str) -> RacerEntry | None:
-        """選手行をパース"""
-        # まず正規表現でパースを試みる
+        """Parse racer line."""
+        # First try regex parsing
         match = self.RACER_PATTERN.match(line)
         if match:
             try:
@@ -223,7 +224,7 @@ class ProgramParser:
             except (ValueError, IndexError) as e:
                 logger.debug(f"Regex parse error: {e}")
 
-        # フォールバック: 固定位置パース
+        # Fallback: fixed position parsing
         # Format: "1 3527後藤浩之53滋賀51A2 5.10 30.40..."
         try:
             if len(line) < 20:
@@ -237,7 +238,7 @@ class ProgramParser:
             weight = int(line[14:16])
             racer_class = line[16:18]
 
-            # 残りは空白区切りの数値
+            # Remaining values are space-separated numbers
             remaining = line[18:].split()
             if len(remaining) < 8:
                 return None
@@ -266,29 +267,24 @@ class ProgramParser:
 
 
 class ResultParser:
-    """競走成績パーサー"""
+    """Race result parser."""
 
     STADIUM_PATTERN = re.compile(r'^(\d{2})KBGN')
-    # 結果ファイルでは半角数字が使われる: "   1R       朝１戦予選　    H1800m"
+    # Result files use half-width numbers: "   1R       朝１戦予選　    H1800m"
     RACE_PATTERN = re.compile(r'^\s*(\d+)R\s+(.*?)\s+H(\d+)')
 
-    # 結果行パターン: "  01  4 4861 田... 54   72  6.80   4    0.05     1.49.6"
+    # Result line pattern: "  01  4 4861 田... 54   72  6.80   4    0.05     1.49.6"
     RESULT_LINE_PATTERN = re.compile(
-        r'^\s*(\d{2})\s+'     # 着順 (01-06)
-        r'(\d)\s+'            # 艇番 (1-6)
-        r'(\d{4})'            # 登録番号
+        r'^\s*(\d{2})\s+'     # Rank (01-06)
+        r'(\d)\s+'            # Boat number (1-6)
+        r'(\d{4})'            # Registration number
     )
 
     def __init__(self, encoding: str = "cp932"):
         self.encoding = encoding
 
-    def _normalize_number(self, text: str) -> str:
-        """全角数字を半角に変換"""
-        trans_table = str.maketrans("０１２３４５６７８９", "0123456789")
-        return text.translate(trans_table)
-
     def _parse_result_line(self, line: str) -> RaceResult | None:
-        """結果行をパース"""
+        """Parse result line."""
         match = self.RESULT_LINE_PATTERN.match(line)
         if not match:
             return None
@@ -298,30 +294,30 @@ class ResultParser:
             boat_no = int(match.group(2))
             racer_id = int(match.group(3))
 
-            # 残りの部分から数値を抽出
+            # Extract values from remaining part
             # Format: ... 54   72  6.80   4    0.05     1.49.6
             remaining = line[match.end():]
 
-            # 空白で分割して数値を取得
+            # Split by whitespace to get values
             parts = remaining.split()
 
-            # 後ろから探す: レースタイム, ST, 進入コース, 展示タイム, 展示ST, 展示番号
-            # 最低限必要なのは: 進入コース, ST, レースタイム
+            # Search from end: race_time, ST, course, exhibition_time, exhibition_ST, exhibition_no
+            # Minimum needed: course, ST, race_time
             course = 0
             start_timing = 0.0
             race_time = ""
 
             if len(parts) >= 3:
-                # 最後の値がレースタイム (1.49.6 形式)
+                # Last value is race time (1.49.6 format)
                 race_time = parts[-1]
 
-                # その前がSTタイミング
+                # Previous is ST timing
                 try:
                     start_timing = float(parts[-2])
                 except ValueError:
                     pass
 
-                # その前が進入コース
+                # Before that is starting course
                 try:
                     course = int(parts[-3])
                 except ValueError:
@@ -340,7 +336,7 @@ class ResultParser:
             return None
 
     def parse_file(self, file_path: Path) -> Generator[tuple[RaceInfo, list[RaceResult]], None, None]:
-        """競走成績ファイルをパース"""
+        """Parse race result file."""
         try:
             content = file_path.read_text(encoding=self.encoding)
         except UnicodeDecodeError:
@@ -355,24 +351,24 @@ class ResultParser:
         in_results_section = False
 
         for line in lines:
-            # レース場識別
+            # Stadium identification
             stadium_match = self.STADIUM_PATTERN.match(line)
             if stadium_match:
                 stadium_code = int(stadium_match.group(1))
                 current_stadium = {
                     "code": stadium_code,
-                    "name": STADIUM_CODES.get(stadium_code, "不明")
+                    "name": STADIUM_CODES.get(stadium_code, "Unknown")
                 }
                 continue
 
-            # レース情報
+            # Race information
             race_match = self.RACE_PATTERN.search(line)
             if race_match and current_stadium:
-                # 前のレースがあれば出力
+                # Yield previous race if exists
                 if current_race and current_results:
                     yield current_race, current_results
 
-                race_no = int(self._normalize_number(race_match.group(1)))
+                race_no = int(normalize_fullwidth_numbers(race_match.group(1)))
                 race_type = race_match.group(2).strip()
                 distance = int(race_match.group(3))
 
@@ -388,32 +384,32 @@ class ResultParser:
                 in_results_section = False
                 continue
 
-            # 区切り線でセクション開始
+            # Section starts at separator line
             if line.startswith("---") and current_race:
                 in_results_section = True
                 continue
 
-            # 結果行のパース
+            # Parse result lines
             if in_results_section and current_race and line.strip():
                 result = self._parse_result_line(line)
                 if result:
                     current_results.append(result)
                 elif line.strip().startswith("単勝") or line.strip().startswith("複勝"):
-                    # 払戻金セクションに入ったら終了
+                    # End when entering payout section
                     in_results_section = False
 
-        # 最後のレース
+        # Last race
         if current_race and current_results:
             yield current_race, current_results
 
 
 class PayoutParser:
-    """払戻金パーサー"""
+    """Payout parser."""
 
     STADIUM_PATTERN = re.compile(r'^(\d{2})KBGN')
     RACE_PATTERN = re.compile(r'^\s*(\d+)R\s+')
 
-    # 払戻金パターン
+    # Payout patterns (Japanese bet type names in source data)
     WIN_PATTERN = re.compile(r'単勝\s+(\d)\s+(\d+)')
     PLACE_PATTERN = re.compile(r'複勝\s+(\d)\s+(\d+)')
     EXACTA_PATTERN = re.compile(r'２連単\s+(\d)-(\d)\s+(\d+)')
@@ -426,7 +422,7 @@ class PayoutParser:
         self.encoding = encoding
 
     def parse_file(self, file_path: Path) -> Generator[RacePayouts, None, None]:
-        """払戻金ファイルをパース"""
+        """Parse payout file."""
         try:
             content = file_path.read_text(encoding=self.encoding)
         except UnicodeDecodeError:
@@ -441,16 +437,16 @@ class PayoutParser:
         in_payout_section = False
 
         for line in lines:
-            # レース場識別
+            # Stadium identification
             stadium_match = self.STADIUM_PATTERN.match(line)
             if stadium_match:
                 current_stadium = int(stadium_match.group(1))
                 continue
 
-            # レース番号
+            # Race number
             race_match = self.RACE_PATTERN.match(line)
             if race_match and current_stadium:
-                # 前のレースがあれば出力
+                # Yield previous race if exists
                 if current_race_no and self._has_payouts(current_payouts):
                     yield RacePayouts(
                         date=date_str,
@@ -464,15 +460,15 @@ class PayoutParser:
                 in_payout_section = False
                 continue
 
-            # 払戻金セクション検出
+            # Detect payout section
             if "単勝" in line or "２連単" in line or "３連単" in line:
                 in_payout_section = True
 
-            # 払戻金パース
+            # Parse payouts
             if in_payout_section and current_race_no:
                 self._parse_payout_line(line, current_payouts)
 
-        # 最後のレース
+        # Last race
         if current_race_no and current_stadium and self._has_payouts(current_payouts):
             yield RacePayouts(
                 date=date_str,
@@ -482,7 +478,7 @@ class PayoutParser:
             )
 
     def _empty_payouts(self) -> dict:
-        """空の払戻金辞書を返す"""
+        """Return empty payout dictionary."""
         return {
             "win": {},
             "place": {},
@@ -494,45 +490,45 @@ class PayoutParser:
         }
 
     def _has_payouts(self, payouts: dict) -> bool:
-        """払戻金データがあるか確認"""
+        """Check if payout data exists."""
         return any(len(v) > 0 for v in payouts.values())
 
     def _parse_payout_line(self, line: str, payouts: dict) -> None:
-        """払戻金行をパース"""
-        # 単勝
+        """Parse payout line."""
+        # Win
         for match in self.WIN_PATTERN.finditer(line):
             boat = int(match.group(1))
             payout = int(match.group(2))
             payouts["win"][boat] = payout
 
-        # 複勝
+        # Place
         for match in self.PLACE_PATTERN.finditer(line):
             boat = int(match.group(1))
             payout = int(match.group(2))
             payouts["place"][boat] = payout
 
-        # 2連単
+        # Exacta
         for match in self.EXACTA_PATTERN.finditer(line):
             first = int(match.group(1))
             second = int(match.group(2))
             payout = int(match.group(3))
             payouts["exacta"][(first, second)] = payout
 
-        # 2連複
+        # Quinella
         for match in self.QUINELLA_PATTERN.finditer(line):
             a = int(match.group(1))
             b = int(match.group(2))
             payout = int(match.group(3))
             payouts["quinella"][tuple(sorted([a, b]))] = payout
 
-        # ワイド
+        # Wide
         for match in self.WIDE_PATTERN.finditer(line):
             a = int(match.group(1))
             b = int(match.group(2))
             payout = int(match.group(3))
             payouts["wide"][tuple(sorted([a, b]))] = payout
 
-        # 3連単
+        # Trifecta
         for match in self.TRIFECTA_PATTERN.finditer(line):
             first = int(match.group(1))
             second = int(match.group(2))
@@ -540,7 +536,7 @@ class PayoutParser:
             payout = int(match.group(4))
             payouts["trifecta"][(first, second, third)] = payout
 
-        # 3連複
+        # Trio
         for match in self.TRIO_PATTERN.finditer(line):
             a = int(match.group(1))
             b = int(match.group(2))
@@ -551,23 +547,23 @@ class PayoutParser:
 
 def convert_to_csv(input_dir: Path, output_dir: Path, data_type: str = "programs"):
     """
-    テキストファイルをCSVに変換
-    
+    Convert text files to CSV.
+
     Args:
-        input_dir: 入力ディレクトリ
-        output_dir: 出力ディレクトリ
+        input_dir: Input directory
+        output_dir: Output directory
         data_type: "programs" or "results"
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     if data_type == "programs":
         parser = ProgramParser()
     else:
         parser = ResultParser()
-    
+
     all_races = []
     all_entries = []
-    
+
     txt_files = list((input_dir / data_type).glob("*.txt"))
     logger.info(f"Processing {len(txt_files)} {data_type} files")
 
@@ -582,7 +578,7 @@ def convert_to_csv(input_dir: Path, output_dir: Path, data_type: str = "programs
                 "distance": race_info.distance,
             }
             all_races.append(race_dict)
-            
+
             for entry in entries:
                 entry_dict = {
                     "date": race_info.date,
@@ -591,13 +587,13 @@ def convert_to_csv(input_dir: Path, output_dir: Path, data_type: str = "programs
                     **entry.__dict__
                 }
                 all_entries.append(entry_dict)
-    
-    # DataFrameに変換して保存
+
+    # Convert to DataFrame and save
     if all_races:
         races_df = pd.DataFrame(all_races)
         races_df.to_csv(output_dir / f"{data_type}_races.csv", index=False)
         logger.info(f"Saved {len(races_df)} races to {data_type}_races.csv")
-    
+
     if all_entries:
         entries_df = pd.DataFrame(all_entries)
         entries_df.to_csv(output_dir / f"{data_type}_entries.csv", index=False)
@@ -606,11 +602,11 @@ def convert_to_csv(input_dir: Path, output_dir: Path, data_type: str = "programs
 
 def convert_payouts_to_csv(input_dir: Path, output_dir: Path):
     """
-    払戻金データをCSVに変換
+    Convert payout data to CSV.
 
     Args:
-        input_dir: 入力ディレクトリ
-        output_dir: 出力ディレクトリ
+        input_dir: Input directory
+        output_dir: Output directory
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -622,7 +618,7 @@ def convert_payouts_to_csv(input_dir: Path, output_dir: Path):
 
     for txt_path in tqdm(txt_files, desc="Parsing payouts", unit="file"):
         for payout in parser.parse_file(txt_path):
-            # 2連単のみをフラット化して保存（バックテスト用）
+            # Flatten exacta payouts for backtesting
             for combo, pay in payout.exacta.items():
                 all_payouts.append({
                     "date": payout.date,
@@ -632,10 +628,10 @@ def convert_payouts_to_csv(input_dir: Path, output_dir: Path):
                     "first": combo[0],
                     "second": combo[1],
                     "payout": pay,
-                    "odds": pay / 100,  # 100円あたりの払戻金 → オッズ
+                    "odds": pay / 100,  # Payout per 100 yen -> odds
                 })
 
-            # 3連単も保存
+            # Also save trifecta
             for combo, pay in payout.trifecta.items():
                 all_payouts.append({
                     "date": payout.date,
@@ -656,7 +652,7 @@ def convert_payouts_to_csv(input_dir: Path, output_dir: Path):
 
 
 def main():
-    """メイン処理"""
+    """Main entry point."""
     convert_to_csv(RAW_DATA_DIR, PROCESSED_DATA_DIR, "programs")
     convert_to_csv(RAW_DATA_DIR, PROCESSED_DATA_DIR, "results")
     convert_payouts_to_csv(RAW_DATA_DIR, PROCESSED_DATA_DIR)

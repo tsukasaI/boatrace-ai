@@ -1,7 +1,7 @@
 """
-LZHファイル解凍スクリプト
+LZH File Extraction Script
 
-ダウンロードしたLZH形式のファイルを解凍してテキストファイルに変換
+Extracts downloaded LZH format files and converts them to text files
 """
 
 import sys
@@ -10,8 +10,8 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-# lhaplusなどのLZH解凍ライブラリ
-# Python 3.x では lhafile を使用
+# LZH extraction library (like lhaplus)
+# For Python 3.x, use lhafile
 try:
     import lhafile
     HAS_LHAFILE = True
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class LzhExtractor:
-    """LZHファイルを解凍するクラス"""
+    """Class to extract LZH files"""
     
     def __init__(self, input_dir: Path = None, output_dir: Path = None):
         self.input_dir = input_dir or RAW_DATA_DIR
@@ -43,24 +43,24 @@ class LzhExtractor:
     
     def extract_file(self, lzh_path: Path) -> Path | None:
         """
-        単一のLZHファイルを解凍
+        Extract a single LZH file
 
         Args:
-            lzh_path: LZHファイルのパス
+            lzh_path: Path to the LZH file
 
         Returns:
-            解凍されたメインファイルのパス（失敗時はNone）
+            Path to the extracted main file (None if failed)
         """
         if not HAS_LHAFILE:
             return None
 
         try:
-            # 出力ディレクトリを入力と同じ構造で作成
+            # Create output directory with same structure as input
             relative_path = lzh_path.relative_to(self.input_dir)
             output_subdir = self.output_dir / relative_path.parent
             output_subdir.mkdir(parents=True, exist_ok=True)
 
-            # LZHファイルを開く
+            # Open LZH file
             archive = lhafile.Lhafile(str(lzh_path))
             file_list = archive.infolist()
 
@@ -69,11 +69,11 @@ class LzhExtractor:
 
             main_output_path = None
 
-            # アーカイブ内のすべてのファイルを展開
+            # Extract all files in the archive
             for info in file_list:
                 content = archive.read(info.filename)
 
-                # 出力ファイルパス（lzh_stem を使って命名）
+                # Output file path (named using lzh_stem)
                 output_path = output_subdir / lzh_path.stem
                 output_path = output_path.with_suffix(".txt")
                 output_path.write_bytes(content)
@@ -91,13 +91,13 @@ class LzhExtractor:
     
     def extract_all(self, data_types: list = None) -> dict:
         """
-        すべてのLZHファイルを解凍
-        
+        Extract all LZH files
+
         Args:
-            data_types: ["results", "programs"] のリスト
-            
+            data_types: List of ["results", "programs"]
+
         Returns:
-            解凍結果の統計
+            Extraction statistics
         """
         if data_types is None:
             data_types = ["results", "programs"]
@@ -115,7 +115,7 @@ class LzhExtractor:
             logger.info(f"Found {len(lzh_files)} LZH files in {data_type}")
 
             for lzh_path in tqdm(lzh_files, desc=f"Extracting {data_type}", unit="file"):
-                # 既存ファイルはスキップ
+                # Skip existing files
                 txt_path = lzh_path.with_suffix(".txt")
                 if txt_path.exists():
                     stats[data_type]["skip"] += 1
@@ -130,7 +130,7 @@ class LzhExtractor:
 
 
 def main():
-    """メイン処理"""
+    """Main process"""
     if not HAS_LHAFILE:
         logger.error("Please install lhafile: pip install lhafile")
         sys.exit(1)

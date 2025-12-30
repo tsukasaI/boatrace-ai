@@ -1,81 +1,107 @@
-# 競艇AI予測システム
+# Boat Race AI Prediction System
 
-競艇（ボートレース）の2連単予測を行うAIシステム。
-期待値ベースの賭け戦略で回収率向上を目指す。
+An AI system for predicting exacta (2-consecutive) outcomes in Japanese boat racing (Kyotei).
+Aims to improve ROI using an expected value-based betting strategy.
 
-## プロジェクト構成
+## Project Structure
 
 ```
 boatrace-ai/
 ├── config/
-│   └── settings.py          # 設定ファイル
+│   └── settings.py          # Configuration file
 ├── data/
-│   ├── raw/                  # 生データ（LZH, TXT）
-│   │   ├── results/          # 競走成績
-│   │   └── programs/         # 番組表
-│   └── processed/            # 処理済みデータ（CSV）
+│   ├── raw/                  # Raw data (LZH, TXT)
+│   │   ├── results/          # Race results
+│   │   └── programs/         # Race programs
+│   └── processed/            # Processed data (CSV)
 ├── src/
-│   ├── data_collection/      # データ取得
-│   │   ├── downloader.py     # ダウンローダー
-│   │   └── extractor.py      # LZH解凍
-│   ├── preprocessing/        # 前処理
-│   │   └── parser.py         # パーサー
-│   ├── models/               # 予測モデル（Phase 2）
-│   └── api/                  # 推論API（Phase 4）
-├── notebooks/                # Jupyter探索用
+│   ├── data_collection/      # Data collection
+│   │   ├── downloader.py     # Downloader
+│   │   └── extractor.py      # LZH extraction
+│   ├── preprocessing/        # Preprocessing
+│   │   └── parser.py         # Parser
+│   ├── models/               # Prediction models (Phase 2)
+│   ├── backtesting/          # Backtesting (Phase 3)
+│   └── api/                  # Inference API (deprecated)
+├── rust-api/                 # Rust inference API (Phase 4)
+├── notebooks/                # Jupyter exploration
 ├── requirements.txt
 └── README.md
 ```
 
-## セットアップ
+## Setup
 
 ```bash
-# 仮想環境作成
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+# Create virtual environment (using uv)
+uv venv
+source .venv/bin/activate
 
-# 依存パッケージインストール
-pip install -r requirements.txt
+# Install dependencies
+uv pip install -r requirements.txt
 ```
 
-## 使い方
+## Usage
 
-### Phase 1: データ取得
+### Phase 1: Data Collection
 
 ```bash
-# 1. データダウンロード（2023-2024年、約2年分）
-python src/data_collection/downloader.py
+# 1. Download data (2023-2024, about 2 years)
+uv run python src/data_collection/downloader.py
 
-# 2. LZH解凍
-python src/data_collection/extractor.py
+# 2. Extract LZH files
+uv run python src/data_collection/extractor.py
 
-# 3. CSVに変換
-python src/preprocessing/parser.py
+# 3. Convert to CSV
+uv run python src/preprocessing/parser.py
 ```
 
-## データソース
+### Phase 2: Model Training
 
-- 競走成績: http://www1.mbrace.or.jp/od2/K/
-- 番組表: http://www1.mbrace.or.jp/od2/B/
-- 選手データ: https://www.boatrace.jp/owpc/pc/extra/data/download.html
+```bash
+# Train with historical features
+uv run python src/models/train.py --historical
 
-## 開発フェーズ
-
-- [x] Phase 1: データ収集 & 探索
-- [ ] Phase 2: モデル構築
-- [ ] Phase 3: バックテスト
-- [ ] Phase 4: 推論API & UI
-
-## 戦略
-
-**期待値ベース**
-```
-期待値 = 予測的中確率 × オッズ
-期待値 > 1.0 の買い目のみ購入
+# Export to ONNX
+uv run python src/models/export_onnx.py --verify
 ```
 
-## 拡張予定
+### Phase 3: Backtesting
 
-- 券種拡張（3連単、3連複）
-- 目標金額逆算機能
-- ケリー基準によるベット最適化
+```bash
+# Run backtest with EV > 1.0 strategy
+uv run python -m src.backtesting.simulator
+```
+
+### Phase 4: Rust API
+
+```bash
+cd rust-api && cargo run
+# Endpoints: GET /health, POST /predict, POST /predict/exacta
+```
+
+## Data Sources
+
+- Race Results: https://www1.mbrace.or.jp/od2/K/
+- Race Programs: https://www1.mbrace.or.jp/od2/B/
+- Official Data: https://www.boatrace.jp/owpc/pc/extra/data/download.html
+
+## Development Phases
+
+- [x] Phase 1: Data Collection & Exploration
+- [x] Phase 2: Model Building
+- [x] Phase 3: Backtesting
+- [x] Phase 4: Inference API
+
+## Strategy
+
+**Expected Value Based**
+```
+expected_value = predicted_probability × odds
+Buy only when expected_value > 1.0
+```
+
+## Future Extensions
+
+- Additional bet types (trifecta, trio)
+- Target profit calculation
+- Kelly criterion bet sizing optimization

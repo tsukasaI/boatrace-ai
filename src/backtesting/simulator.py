@@ -1,7 +1,7 @@
 """
-バックテストシミュレーター
+Backtest Simulator
 
-過去データを使ってEV>1.0戦略の収益性を検証
+Validate profitability of EV>1.0 strategy using historical data
 """
 
 import sys
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class BetRecord:
-    """個別の賭け記録"""
+    """Individual bet record"""
     date: int
     stadium_code: int
     race_no: int
@@ -45,12 +45,12 @@ class BetRecord:
     actual_first: int
     actual_second: int
     won: bool
-    profit: int  # 利益（勝ち: payout - stake, 負け: -stake）
+    profit: int  # Profit (win: payout - stake, loss: -stake)
 
 
 @dataclass
 class BacktestResult:
-    """バックテスト結果"""
+    """Backtest result"""
     bets: List[BetRecord] = field(default_factory=list)
     total_races: int = 0
     races_with_bets: int = 0
@@ -70,7 +70,7 @@ class BacktestResult:
 
 
 class BacktestSimulator:
-    """バックテストシミュレーター"""
+    """Backtest simulator"""
 
     def __init__(
         self,
@@ -82,11 +82,11 @@ class BacktestSimulator:
     ):
         """
         Args:
-            model: 予測モデル
-            ev_threshold: 期待値のしきい値
-            stake: 1回あたりの賭け金（円）
-            max_bets_per_race: レースあたりの最大賭け数
-            use_synthetic_odds: 合成オッズを使用するか
+            model: Prediction model
+            ev_threshold: Expected value threshold
+            stake: Stake amount per bet (yen)
+            max_bets_per_race: Maximum number of bets per race
+            use_synthetic_odds: Whether to use synthetic odds
         """
         self.predictor = RacePredictor(model)
         self.ev_threshold = ev_threshold
@@ -102,11 +102,11 @@ class BacktestSimulator:
         test_only: bool = True,
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
-        データを読み込み
+        Load data
 
         Args:
-            data_dir: データディレクトリ
-            test_only: テストデータのみ使用
+            data_dir: Data directory
+            test_only: Use only test data
 
         Returns:
             (programs_df, results_df, payouts_df)
@@ -117,7 +117,7 @@ class BacktestSimulator:
         results_df = pd.read_csv(data_dir / "results_entries.csv")
         payouts_df = pd.read_csv(data_dir / "payouts.csv")
 
-        # テストデータのみ（2024年後半）
+        # Test data only (second half of 2024)
         if test_only:
             test_start = 20240701
             programs_df = programs_df[programs_df["date"] >= test_start]
@@ -133,24 +133,24 @@ class BacktestSimulator:
         payouts_df: pd.DataFrame,
     ) -> BacktestResult:
         """
-        バックテストを実行
+        Run backtest
 
         Args:
-            programs_df: 番組表データ
-            results_df: 結果データ
-            payouts_df: 払戻金データ
+            programs_df: Race program data
+            results_df: Race results data
+            payouts_df: Payout data
 
         Returns:
-            バックテスト結果
+            Backtest result
         """
         result = BacktestResult()
 
-        # レースごとにグループ化
+        # Group by race
         race_groups = programs_df.groupby(["date", "stadium_code", "race_no"])
 
-        # 特徴量カラム
+        # Feature columns
         feature_cols = get_feature_columns()
-        # 履歴特徴量を除外（シンプル版）
+        # Exclude historical features (simple version)
         base_cols = [c for c in feature_cols if not c.startswith("recent_") and not c.startswith("local_recent") and c != "course_win_rate"]
 
         for (date, stadium, race_no), race_df in tqdm(
@@ -161,7 +161,7 @@ class BacktestSimulator:
             if len(race_df) != 6:
                 continue
 
-            # 結果を取得
+            # Get results
             race_results = results_df[
                 (results_df["date"] == date) &
                 (results_df["stadium_code"] == stadium) &
@@ -170,7 +170,7 @@ class BacktestSimulator:
             if len(race_results) != 6:
                 continue
 
-            # 実際の1着と2着を取得
+            # Get actual 1st and 2nd place
             first_place = race_results[race_results["rank"] == 1]
             second_place = race_results[race_results["rank"] == 2]
             if len(first_place) == 0 or len(second_place) == 0:
@@ -179,12 +179,12 @@ class BacktestSimulator:
             actual_first = int(first_place["boat_no"].values[0])
             actual_second = int(second_place["boat_no"].values[0])
 
-            # オッズを取得
+            # Get odds
             if self.use_synthetic_odds:
-                # 合成オッズを使用
+                # Use synthetic odds
                 odds = self.synthetic_odds_gen.get_all_odds()
             else:
-                # 実オッズを使用（払戻データから）
+                # Use real odds (from payout data)
                 race_payouts = payouts_df[
                     (payouts_df["date"] == date) &
                     (payouts_df["stadium_code"] == stadium) &
@@ -194,47 +194,47 @@ class BacktestSimulator:
                 if len(race_payouts) == 0:
                     continue
 
-                # オッズ辞書を作成
+                # Create odds dictionary
                 odds = {}
                 for _, row in race_payouts.iterrows():
                     odds[(int(row["first"]), int(row["second"]))] = row["odds"]
 
-            # 特徴量を生成
+            # Generate features
             features = self.feature_eng.create_base_features(race_df)
             features = self.feature_eng.create_relative_features(features)
 
-            # 使用可能な特徴量のみ抽出
+            # Extract only available features
             available_cols = [c for c in base_cols if c in features.columns]
             X = features[available_cols].values
 
-            # 欠損値を中央値で埋める
+            # Fill missing values with zeros
             X = np.nan_to_num(X, nan=0.0)
 
-            # 予測
+            # Predict
             try:
                 position_probs = self.predictor.predict_positions(X)
             except Exception as e:
                 logger.debug(f"Prediction error: {e}")
                 continue
 
-            # 2連単確率を計算
+            # Calculate exacta probabilities
             exacta_bets = self.predictor.calculate_exacta_probabilities(position_probs)
 
-            # 期待値を計算
+            # Calculate expected values
             exacta_bets = self.predictor.calculate_expected_values(exacta_bets, odds)
 
-            # EV > threshold の賭けをフィルタ
+            # Filter bets with EV > threshold
             value_bets = [b for b in exacta_bets if b.expected_value > self.ev_threshold]
 
             if not value_bets:
                 continue
 
-            # 上位N個に制限
+            # Limit to top N
             value_bets = value_bets[:self.max_bets_per_race]
 
             result.races_with_bets += 1
 
-            # 賭けを実行
+            # Execute bets
             for bet in value_bets:
                 won = (bet.first == actual_first and bet.second == actual_second)
                 payout = int(bet.odds * self.stake) if won else 0
@@ -259,13 +259,13 @@ class BacktestSimulator:
                 result.total_stake += self.stake
                 result.total_payout += payout
 
-        # メトリクス計算
+        # Calculate metrics
         result.metrics = calculate_metrics(result)
 
         return result
 
     def print_summary(self, result: BacktestResult) -> None:
-        """結果サマリーを出力"""
+        """Output result summary"""
         print("\n" + "=" * 60)
         print("BACKTEST RESULTS")
         print("=" * 60)
@@ -295,7 +295,7 @@ class BacktestSimulator:
 
 
 def main():
-    """メイン処理"""
+    """Main processing"""
     parser = argparse.ArgumentParser(description="Run backtest simulation")
     parser.add_argument(
         "--threshold", type=float, default=1.0,
@@ -319,7 +319,7 @@ def main():
     )
     args = parser.parse_args()
 
-    # モデル読み込み
+    # Load model
     logger.info("Loading model...")
     model = BoatracePredictor()
     try:
@@ -329,7 +329,7 @@ def main():
         logger.info("Run: uv run python src/models/train.py")
         return
 
-    # シミュレーター初期化
+    # Initialize simulator
     simulator = BacktestSimulator(
         model=model,
         ev_threshold=args.threshold,
@@ -341,7 +341,7 @@ def main():
     if args.synthetic_odds:
         logger.info("Using synthetic odds based on historical rates")
 
-    # データ読み込み
+    # Load data
     logger.info("Loading data...")
     try:
         programs_df, results_df, payouts_df = simulator.load_data(
@@ -355,14 +355,14 @@ def main():
     logger.info(f"Loaded {len(programs_df)} program entries")
     logger.info(f"Loaded {len(payouts_df)} payout records")
 
-    # バックテスト実行
+    # Run backtest
     logger.info("Running backtest...")
     result = simulator.run(programs_df, results_df, payouts_df)
 
-    # 結果出力
+    # Output results
     simulator.print_summary(result)
 
-    # 結果をCSV保存
+    # Save results to CSV
     if result.bets:
         bets_df = pd.DataFrame([b.__dict__ for b in result.bets])
         output_path = PROJECT_ROOT / "results" / "backtest_bets.csv"

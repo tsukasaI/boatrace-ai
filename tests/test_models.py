@@ -292,8 +292,8 @@ class TestFormatPredictionResult:
             top_n=5
         )
 
-        assert "着順確率" in result
-        assert "2連単" in result
+        assert "Position Probabilities" in result
+        assert "Exacta" in result
         assert isinstance(result, str)
 
     def test_format_with_value_bets(self, sample_position_probs, sample_odds):
@@ -317,7 +317,7 @@ class TestFormatPredictionResult:
             top_n=5
         )
 
-        assert "バリューベット" in result
+        assert "Value Bets" in result
 
 
 class TestIntegration:

@@ -1,7 +1,7 @@
 """
-バックテストレポート生成
+Backtest Report Generation
 
-結果をCSV/HTML形式で出力
+Output results in CSV/HTML format
 """
 
 import sys
@@ -21,14 +21,14 @@ RESULTS_DIR = PROJECT_ROOT / "results"
 
 def generate_csv_report(result: "BacktestResult", output_path: Path = None) -> Path:
     """
-    CSV形式でレポートを生成
+    Generate report in CSV format
 
     Args:
-        result: バックテスト結果
-        output_path: 出力先パス
+        result: Backtest result
+        output_path: Output file path
 
     Returns:
-        出力ファイルパス
+        Output file path
     """
     output_path = output_path or RESULTS_DIR / "backtest_report.csv"
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -36,7 +36,7 @@ def generate_csv_report(result: "BacktestResult", output_path: Path = None) -> P
     if not result.bets:
         return output_path
 
-    # ベット詳細
+    # Bet details
     bets_df = pd.DataFrame([b.__dict__ for b in result.bets])
     bets_df.to_csv(output_path, index=False)
 
@@ -45,33 +45,33 @@ def generate_csv_report(result: "BacktestResult", output_path: Path = None) -> P
 
 def generate_summary_report(result: "BacktestResult") -> str:
     """
-    テキスト形式のサマリーレポートを生成
+    Generate text format summary report
 
     Args:
-        result: バックテスト結果
+        result: Backtest result
 
     Returns:
-        レポート文字列
+        Report string
     """
     lines = []
     lines.append("=" * 60)
     lines.append("BACKTEST SUMMARY REPORT")
     lines.append("=" * 60)
 
-    # 概要
+    # Overview
     lines.append("\n[Overview]")
     lines.append(f"Total Races: {result.total_races}")
     lines.append(f"Races with Bets: {result.races_with_bets}")
     lines.append(f"Total Bets: {len(result.bets)}")
 
-    # 収益
+    # Profit/Loss
     lines.append("\n[Profit & Loss]")
     lines.append(f"Total Stake: ¥{result.total_stake:,}")
     lines.append(f"Total Payout: ¥{result.total_payout:,}")
     lines.append(f"Net Profit: ¥{result.total_profit:,}")
     lines.append(f"ROI: {result.roi:.1%}")
 
-    # メトリクス
+    # Metrics
     if result.metrics:
         m = result.metrics
         lines.append("\n[Performance Metrics]")
@@ -88,13 +88,13 @@ def generate_summary_report(result: "BacktestResult") -> str:
 
 def generate_analysis_by_stadium(result: "BacktestResult") -> pd.DataFrame:
     """
-    レース場別の分析レポートを生成
+    Generate analysis report by stadium
 
     Args:
-        result: バックテスト結果
+        result: Backtest result
 
     Returns:
-        分析結果のDataFrame
+        DataFrame of analysis results
     """
     from src.backtesting.metrics import analyze_by_dimension
     from config.settings import STADIUM_CODES
@@ -119,13 +119,13 @@ def generate_analysis_by_stadium(result: "BacktestResult") -> pd.DataFrame:
 
 def generate_analysis_by_odds_range(result: "BacktestResult") -> pd.DataFrame:
     """
-    オッズレンジ別の分析レポートを生成
+    Generate analysis report by odds range
 
     Args:
-        result: バックテスト結果
+        result: Backtest result
 
     Returns:
-        分析結果のDataFrame
+        DataFrame of analysis results
     """
     from src.backtesting.metrics import analyze_by_dimension
 
@@ -148,23 +148,23 @@ def generate_analysis_by_odds_range(result: "BacktestResult") -> pd.DataFrame:
 
 def save_full_report(result: "BacktestResult", output_dir: Path = None) -> None:
     """
-    完全なレポートをファイルに保存
+    Save full report to files
 
     Args:
-        result: バックテスト結果
-        output_dir: 出力ディレクトリ
+        result: Backtest result
+        output_dir: Output directory
     """
     output_dir = output_dir or RESULTS_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # サマリー
+    # Summary
     summary = generate_summary_report(result)
     (output_dir / "backtest_summary.txt").write_text(summary)
 
-    # ベット詳細
+    # Bet details
     generate_csv_report(result, output_dir / "backtest_bets.csv")
 
-    # レース場別分析
+    # Analysis by stadium
     if result.bets:
         stadium_analysis = generate_analysis_by_stadium(result)
         stadium_analysis.to_csv(output_dir / "analysis_by_stadium.csv", index=False)

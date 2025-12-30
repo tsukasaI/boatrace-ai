@@ -59,7 +59,7 @@ def sample_results_df():
 @pytest.fixture
 def sample_position_probs():
     """Sample position probability predictions (6 boats × 6 positions)"""
-    # Realistic probabilities where boat 1 (1コース) has highest win probability
+    # Realistic probabilities where boat 1 (lane 1) has highest win probability
     probs = np.array([
         [0.45, 0.20, 0.15, 0.10, 0.06, 0.04],  # Boat 1
         [0.15, 0.25, 0.20, 0.18, 0.12, 0.10],  # Boat 2

@@ -1,7 +1,7 @@
 """
-データセット構築
+Dataset Construction
 
-番組表と結果データを結合し、学習用データセットを生成
+Merge program and results data to generate training dataset
 """
 
 import sys
@@ -17,7 +17,7 @@ from src.models.features import FeatureEngineering, get_feature_columns
 
 
 class DatasetBuilder:
-    """データセット構築クラス"""
+    """Dataset construction class"""
 
     def __init__(
         self,
@@ -26,8 +26,8 @@ class DatasetBuilder:
     ):
         """
         Args:
-            train_end_date: 訓練データの終了日 (YYYYMMDD形式)
-            val_end_date: 検証データの終了日 (YYYYMMDD形式)
+            train_end_date: End date for training data (YYYYMMDD format)
+            val_end_date: End date for validation data (YYYYMMDD format)
         """
         self.train_end_date = train_end_date
         self.val_end_date = val_end_date
@@ -38,7 +38,7 @@ class DatasetBuilder:
         data_dir: Path = None,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
-        CSV データを読み込み
+        Load CSV data
 
         Returns:
             (programs_df, results_df)
@@ -56,22 +56,22 @@ class DatasetBuilder:
         results_df: pd.DataFrame,
     ) -> pd.DataFrame:
         """
-        番組表と結果データを結合
+        Merge program and results data
 
         Args:
-            programs_df: 番組表データ
-            results_df: 結果データ
+            programs_df: Program data
+            results_df: Results data
 
         Returns:
-            結合されたDataFrame
+            Merged DataFrame
         """
-        # 結合キー
+        # Merge keys
         merge_keys = ["date", "stadium_code", "race_no", "boat_no"]
 
-        # 結果データから必要なカラムを選択
+        # Select required columns from results data
         results_subset = results_df[merge_keys + ["racer_id", "rank", "course", "start_timing"]]
 
-        # 結合
+        # Merge
         merged = programs_df.merge(
             results_subset,
             on=merge_keys,
@@ -83,13 +83,13 @@ class DatasetBuilder:
 
     def create_labels(self, df: pd.DataFrame) -> np.ndarray:
         """
-        着順から6クラスの確率ラベルを生成
+        Generate 6-class probability labels from finishing position
 
         Args:
-            df: rankカラムを含むDataFrame
+            df: DataFrame containing rank column
 
         Returns:
-            shape (n_samples, 6) の one-hot ラベル
+            One-hot labels with shape (n_samples, 6)
         """
         n_samples = len(df)
         labels = np.zeros((n_samples, 6))
@@ -105,10 +105,10 @@ class DatasetBuilder:
         df: pd.DataFrame,
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
-        時系列でデータを分割
+        Split data by time series
 
         Args:
-            df: 全データ
+            df: All data
 
         Returns:
             (train_df, val_df, test_df)
@@ -128,24 +128,24 @@ class DatasetBuilder:
         include_historical: bool = True,
     ) -> dict:
         """
-        学習用データセットを構築
+        Build training dataset
 
         Args:
-            data_dir: データディレクトリ
-            include_historical: 履歴特徴量を含めるか
+            data_dir: Data directory
+            include_historical: Whether to include historical features
 
         Returns:
-            データセット辞書
+            Dataset dictionary
         """
-        # データ読み込み
+        # Load data
         programs_df, results_df = self.load_data(data_dir)
 
-        # データ結合
+        # Merge data
         merged_df = self.merge_data(programs_df, results_df)
 
-        # 特徴量生成
+        # Generate features
         if include_historical:
-            # 履歴特徴量には全結果データが必要
+            # Historical features require all results data
             features_df = self.feature_eng.create_all_features(
                 merged_df, results_df, include_historical=True
             )
@@ -154,16 +154,16 @@ class DatasetBuilder:
                 merged_df, None, include_historical=False
             )
 
-        # ラベル追加
+        # Add labels
         features_df["rank"] = merged_df["rank"].values
 
-        # データ分割
+        # Split data
         train_df, val_df, test_df = self.split_data(features_df)
 
-        # 特徴量カラム
+        # Feature columns
         feature_cols = get_feature_columns()
 
-        # 欠損値を埋める
+        # Fill missing values
         for col in feature_cols:
             if col in train_df.columns:
                 median_val = train_df[col].median()
@@ -171,7 +171,7 @@ class DatasetBuilder:
                 val_df[col] = val_df[col].fillna(median_val)
                 test_df[col] = test_df[col].fillna(median_val)
 
-        # 特徴量とラベルを抽出
+        # Extract features and labels
         available_cols = [c for c in feature_cols if c in train_df.columns]
 
         X_train = train_df[available_cols].values
@@ -199,13 +199,13 @@ class DatasetBuilder:
 
 def build_simple_dataset(data_dir: Path = None) -> dict:
     """
-    履歴特徴量なしの簡易データセットを構築
+    Build simple dataset without historical features
 
     Args:
-        data_dir: データディレクトリ
+        data_dir: Data directory
 
     Returns:
-        データセット辞書
+        Dataset dictionary
     """
     builder = DatasetBuilder()
     return builder.build_dataset(data_dir, include_historical=False)
@@ -213,13 +213,13 @@ def build_simple_dataset(data_dir: Path = None) -> dict:
 
 def build_full_dataset(data_dir: Path = None) -> dict:
     """
-    履歴特徴量ありの完全データセットを構築
+    Build full dataset with historical features
 
     Args:
-        data_dir: データディレクトリ
+        data_dir: Data directory
 
     Returns:
-        データセット辞書
+        Dataset dictionary
     """
     builder = DatasetBuilder()
     return builder.build_dataset(data_dir, include_historical=True)

@@ -1,7 +1,7 @@
 """
-バックテストモジュール
+Backtest Module
 
-Phase 3: 過去データでの戦略検証
+Phase 3: Strategy validation using historical data
 """
 
 from src.backtesting.simulator import BacktestSimulator, BacktestResult

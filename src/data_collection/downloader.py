@@ -1,9 +1,9 @@
 """
-競艇データ取得スクリプト
+Boat Race Data Download Script
 
-公式サイトから競走成績と番組表をダウンロード
-- 競走成績: http://www1.mbrace.or.jp/od2/K/{YYYYMM}/k{YYMMDD}.lzh
-- 番組表:   http://www1.mbrace.or.jp/od2/B/{YYYYMM}/b{YYMMDD}.lzh
+Downloads race results and race programs from the official website
+- Race Results: http://www1.mbrace.or.jp/od2/K/{YYYYMM}/k{YYMMDD}.lzh
+- Race Programs: http://www1.mbrace.or.jp/od2/B/{YYYYMM}/b{YYMMDD}.lzh
 """
 
 import sys
@@ -15,11 +15,11 @@ from pathlib import Path
 import requests
 from tqdm import tqdm
 
-# プロジェクトルートをパスに追加
+# Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import DATA_CONFIG, RAW_DATA_DIR
 
-# ログ設定
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -28,48 +28,48 @@ logger = logging.getLogger(__name__)
 
 
 class BoatraceDataDownloader:
-    """競艇公式サイトからデータをダウンロードするクラス"""
+    """Class to download data from the official boat race website"""
     
     def __init__(self, output_dir: Path = None):
         self.output_dir = output_dir or RAW_DATA_DIR
         self.base_urls = DATA_CONFIG["base_urls"]
         self.interval = DATA_CONFIG["request_interval"]
         
-        # 出力ディレクトリ作成
+        # Create output directories
         (self.output_dir / "results").mkdir(parents=True, exist_ok=True)
         (self.output_dir / "programs").mkdir(parents=True, exist_ok=True)
     
     def _build_url(self, data_type: str, target_date: date) -> str:
         """
-        ダウンロードURLを構築
-        
+        Build download URL
+
         Args:
             data_type: "results" or "programs"
-            target_date: 対象日付
-            
+            target_date: Target date
+
         Returns:
-            ダウンロードURL
+            Download URL
         """
         base_url = self.base_urls[data_type]
         yyyymm = target_date.strftime("%Y%m")
         yymmdd = target_date.strftime("%y%m%d")
         
-        # K=競走成績, B=番組表
+        # K=Race Results, B=Race Programs
         prefix = "k" if data_type == "results" else "b"
         
         return f"{base_url}{yyyymm}/{prefix}{yymmdd}.lzh"
     
     def _download_file(self, url: str, output_path: Path, max_retries: int = 3) -> bool:
         """
-        ファイルをダウンロード（リトライ付き）
+        Download file with retry support
 
         Args:
-            url: ダウンロードURL
-            output_path: 保存先パス
-            max_retries: 最大リトライ回数
+            url: Download URL
+            output_path: Output file path
+            max_retries: Maximum number of retries
 
         Returns:
-            成功した場合True
+            True if successful
         """
         for attempt in range(max_retries):
             try:
@@ -79,15 +79,15 @@ class BoatraceDataDownloader:
                     output_path.write_bytes(response.content)
                     return True
                 elif response.status_code == 404:
-                    # その日のレースがない場合（年末年始など）- リトライ不要
+                    # No races on this day (e.g., New Year holidays) - no retry needed
                     logger.debug(f"No data for {url}")
                     return False
                 else:
                     logger.warning(f"HTTP {response.status_code}: {url}")
-                    # 5xx系エラーはリトライ
+                    # Retry on 5xx server errors
                     if response.status_code >= 500:
                         if attempt < max_retries - 1:
-                            wait_time = 2 ** (attempt + 1)  # 2, 4, 8秒
+                            wait_time = 2 ** (attempt + 1)  # 2, 4, 8 seconds
                             logger.info(f"Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
                             time.sleep(wait_time)
                             continue
@@ -114,21 +114,21 @@ class BoatraceDataDownloader:
         return False
     
     def download_date_range(
-        self, 
-        start_date: date, 
-        end_date: date, 
+        self,
+        start_date: date,
+        end_date: date,
         data_types: list = None
     ) -> dict:
         """
-        指定期間のデータをダウンロード
-        
+        Download data for a specified date range
+
         Args:
-            start_date: 開始日
-            end_date: 終了日
-            data_types: ["results", "programs"] のリスト
-            
+            start_date: Start date
+            end_date: End date
+            data_types: List of ["results", "programs"]
+
         Returns:
-            ダウンロード結果の統計
+            Download statistics
         """
         if data_types is None:
             data_types = ["results", "programs"]
@@ -140,14 +140,14 @@ class BoatraceDataDownloader:
         
         logger.info(f"Downloading data from {start_date} to {end_date} ({total_days} days)")
 
-        # 日付リストを生成
+        # Generate list of dates
         dates = []
         current = start_date
         while current <= end_date:
             dates.append(current)
             current += timedelta(days=1)
 
-        # tqdmでプログレスバー表示
+        # Display progress bar with tqdm
         for current_date in tqdm(dates, desc="Downloading", unit="day"):
             for data_type in data_types:
                 output_path = (
@@ -155,7 +155,7 @@ class BoatraceDataDownloader:
                     f"{data_type}_{current_date.strftime('%Y%m%d')}.lzh"
                 )
 
-                # 既存ファイルはスキップ
+                # Skip existing files
                 if output_path.exists():
                     stats[data_type]["skip"] += 1
                     continue
@@ -167,24 +167,24 @@ class BoatraceDataDownloader:
                 else:
                     stats[data_type]["fail"] += 1
 
-                # サーバー負荷軽減のため待機
+                # Wait to reduce server load
                 time.sleep(self.interval)
 
         return stats
 
 
 def main():
-    """メイン処理"""
+    """Main process"""
     downloader = BoatraceDataDownloader()
     
-    # 設定から期間を取得
+    # Get date range from configuration
     start_date = DATA_CONFIG["start_date"]
     end_date = DATA_CONFIG["end_date"]
     
-    # ダウンロード実行
+    # Execute download
     stats = downloader.download_date_range(start_date, end_date)
     
-    # 結果表示
+    # Display results
     logger.info("=" * 50)
     logger.info("Download completed!")
     for data_type, counts in stats.items():

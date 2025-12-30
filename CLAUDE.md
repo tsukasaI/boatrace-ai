@@ -23,7 +23,11 @@ boatrace-ai/
 │   │   ├── results/             # Race results (着順, タイム)
 │   │   └── programs/            # Race programs (出走表, 選手情報)
 │   └── processed/               # Processed CSV files
-├── models/                      # Saved model files (.pkl)
+├── models/                      # Saved model files
+│   ├── boatrace_model.pkl       # LightGBM model (Python)
+│   └── onnx/                    # ONNX models (for Rust API)
+│       ├── position_1-6.onnx    # 6 position prediction models
+│       └── metadata.json        # Feature names & model info
 ├── results/                     # Evaluation results & plots
 ├── src/
 │   ├── data_collection/
@@ -74,12 +78,13 @@ boatrace-ai/
 4. ✅ Analysis by stadium, race type, odds range
 5. ⬚ Run backtest on full dataset
 
-### Phase 4: Inference API ✅ IN PROGRESS
+### Phase 4: Inference API ✅ COMPLETE
 1. ✅ Rust REST API with actix-web
 2. ✅ Endpoints: /health, /predict, /predict/exacta
-3. ✅ Mock predictor with statistical heuristics
-4. ⬚ Replace mock with ONNX model loading
-5. ⬚ Web dashboard for daily predictions
+3. ✅ ONNX model export from LightGBM
+4. ✅ ONNX Runtime inference in Rust
+5. ✅ Fallback predictor when models unavailable
+6. ⬚ Web dashboard for daily predictions
 
 ## Commands
 
@@ -116,6 +121,9 @@ uv run python src/models/train.py --historical --optimize --n-trials 50
 
 # Evaluate model
 uv run python src/models/evaluate.py --historical
+
+# Export to ONNX (for Rust API)
+uv run python src/models/export_onnx.py --verify --compare
 ```
 
 ### Phase 3: Backtesting
@@ -131,6 +139,9 @@ uv run python -m src.backtesting.simulator --max-bets 5
 
 # Use all data (not just test set)
 uv run python -m src.backtesting.simulator --all-data
+
+# Use synthetic odds (avoids data leakage from real payouts)
+uv run python -m src.backtesting.simulator --synthetic-odds
 ```
 
 ### Phase 4: Rust API
@@ -146,6 +157,9 @@ cd rust-api && cargo run
 
 # Custom host/port
 HOST=0.0.0.0 PORT=3000 cargo run
+
+# With ONNX models (default: ../models/onnx)
+MODEL_DIR=/path/to/models/onnx cargo run
 ```
 
 #### API Endpoints
@@ -197,16 +211,16 @@ P(boat_i=1st, boat_j=2nd) ≈ P(boat_i=1st) × P(boat_j=2nd) / (1 - P(boat_j=1st
 ## TODO
 
 ### Immediate
-- [ ] Wait for data download to complete
+- [ ] Wait for data download to complete (~53% done)
 - [ ] Run extractor and parser on full dataset
-- [ ] Train model and evaluate baseline accuracy
-- [ ] Run backtest and analyze ROI
-- [ ] Add ONNX model loading to Rust API
+- [ ] Retrain model with full 2-year data
+- [ ] Run backtest with synthetic odds on full dataset
 
 ### Short-term
 - [ ] Add weather/water condition features (requires scraping)
 - [ ] Create Jupyter notebook for data exploration
 - [ ] Tune EV threshold based on backtest results
+- [ ] Add Docker deployment
 
 ### Long-term
 - [ ] Add support for 3連単, 3連複

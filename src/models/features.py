@@ -1,7 +1,7 @@
 """
-特徴量エンジニアリング
+Feature Engineering
 
-レーサー、モーター、ボートの統計情報と過去成績から特徴量を生成
+Generate features from racer, motor, boat statistics and past performance
 """
 
 import pandas as pd
@@ -10,41 +10,41 @@ from typing import Optional
 
 
 class FeatureEngineering:
-    """特徴量生成クラス"""
+    """Feature generation class"""
 
-    # 級別のエンコーディング
+    # Class rank encoding
     CLASS_ENCODING = {"A1": 4, "A2": 3, "B1": 2, "B2": 1}
 
     def __init__(self, n_recent_races: int = 30):
         """
         Args:
-            n_recent_races: 過去成績の計算に使用するレース数
+            n_recent_races: Number of races to use for past performance calculation
         """
         self.n_recent_races = n_recent_races
 
     def create_base_features(self, programs_df: pd.DataFrame) -> pd.DataFrame:
         """
-        番組表データから基本特徴量を生成
+        Generate base features from program data
 
         Args:
-            programs_df: 番組表エントリーデータ
+            programs_df: Program entry data
 
         Returns:
-            基本特徴量のDataFrame
+            DataFrame of base features
         """
         df = programs_df.copy()
 
-        # 級別をエンコード
+        # Encode class rank
         df["class_encoded"] = df["racer_class"].map(self.CLASS_ENCODING).fillna(0)
 
-        # 基本特徴量
+        # Base features
         features = df[[
             "date", "stadium_code", "race_no", "boat_no", "racer_id",
-            # レーサー特徴量
+            # Racer features
             "national_win_rate", "national_in2_rate",
             "local_win_rate", "local_in2_rate",
             "age", "weight", "class_encoded",
-            # 機材特徴量
+            # Equipment features
             "motor_no", "motor_in2_rate",
             "boat_no_equip", "boat_in2_rate",
         ]].copy()
@@ -57,36 +57,36 @@ class FeatureEngineering:
         results_df: pd.DataFrame,
     ) -> pd.DataFrame:
         """
-        過去成績から履歴特徴量を生成
+        Generate historical features from past performance
 
         Args:
-            programs_df: 番組表エントリーデータ
-            results_df: レース結果データ
+            programs_df: Program entry data
+            results_df: Race results data
 
         Returns:
-            履歴特徴量のDataFrame
+            DataFrame of historical features
         """
-        # 結果データを日付でソート
+        # Sort results data by date
         results = results_df.sort_values("date").copy()
 
-        # racer_idごとの過去成績を集計
+        # Aggregate past performance by racer_id
         historical_features = []
 
         for (date, stadium, race_no), group in programs_df.groupby(
             ["date", "stadium_code", "race_no"]
         ):
-            # このレースより前の結果を取得
+            # Get results before this race
             past_results = results[results["date"] < date]
 
             for _, row in group.iterrows():
                 racer_id = row["racer_id"]
 
-                # このレーサーの過去成績
+                # This racer's past performance
                 racer_results = past_results[
                     past_results["racer_id"] == racer_id
                 ].tail(self.n_recent_races)
 
-                # 過去成績の統計
+                # Statistics of past performance
                 if len(racer_results) > 0:
                     recent_win_rate = (racer_results["rank"] == 1).mean()
                     recent_in2_rate = (racer_results["rank"] <= 2).mean()
@@ -98,11 +98,11 @@ class FeatureEngineering:
                     recent_win_rate = 0.0
                     recent_in2_rate = 0.0
                     recent_in3_rate = 0.0
-                    avg_rank = 3.5  # 中央値
-                    avg_start_timing = 0.15  # 平均的なST
+                    avg_rank = 3.5  # Median value
+                    avg_start_timing = 0.15  # Average ST
                     race_count = 0
 
-                # 同会場での過去成績
+                # Past performance at same stadium
                 local_results = past_results[
                     (past_results["racer_id"] == racer_id) &
                     (past_results["stadium_code"] == stadium)
@@ -115,10 +115,10 @@ class FeatureEngineering:
                     local_recent_win_rate = 0.0
                     local_race_count = 0
 
-                # コース別勝率（進入コース）
+                # Win rate by course (entry course)
                 course_results = past_results[
                     (past_results["racer_id"] == racer_id) &
-                    (past_results["course"] == row["boat_no"])  # 枠番=コースと仮定
+                    (past_results["course"] == row["boat_no"])  # Assuming lane number = course
                 ].tail(self.n_recent_races)
 
                 if len(course_results) > 0:
@@ -132,7 +132,7 @@ class FeatureEngineering:
                     "race_no": race_no,
                     "boat_no": row["boat_no"],
                     "racer_id": racer_id,
-                    # 履歴特徴量
+                    # Historical features
                     "recent_win_rate": recent_win_rate,
                     "recent_in2_rate": recent_in2_rate,
                     "recent_in3_rate": recent_in3_rate,
@@ -148,40 +148,40 @@ class FeatureEngineering:
 
     def create_relative_features(self, features_df: pd.DataFrame) -> pd.DataFrame:
         """
-        レース内での相対特徴量を生成
+        Generate relative features within a race
 
         Args:
-            features_df: 特徴量DataFrame
+            features_df: Features DataFrame
 
         Returns:
-            相対特徴量を追加したDataFrame
+            DataFrame with relative features added
         """
         df = features_df.copy()
 
-        # レースごとにグループ化
+        # Group by race
         group_cols = ["date", "stadium_code", "race_no"]
 
-        # 勝率の順位（1=最高）
+        # Win rate rank (1=highest)
         df["win_rate_rank"] = df.groupby(group_cols)["national_win_rate"].rank(
             ascending=False, method="min"
         )
 
-        # 勝率とレース内平均の差
+        # Difference between win rate and race average
         race_avg_win_rate = df.groupby(group_cols)["national_win_rate"].transform("mean")
         df["win_rate_diff_from_avg"] = df["national_win_rate"] - race_avg_win_rate
 
-        # モーター2連率の順位
+        # Motor top-2 rate rank
         df["motor_rate_rank"] = df.groupby(group_cols)["motor_in2_rate"].rank(
             ascending=False, method="min"
         )
 
-        # ボート2連率の順位
+        # Boat top-2 rate rank
         df["boat_rate_rank"] = df.groupby(group_cols)["boat_in2_rate"].rank(
             ascending=False, method="min"
         )
 
-        # 枠番の有利不利（1コースが有利）
-        # 一般的な1コース勝率は約55%、6コースは約5%
+        # Lane advantage/disadvantage (lane 1 is advantageous)
+        # Typical lane 1 win rate is about 55%, lane 6 is about 5%
         course_advantage = {1: 0.55, 2: 0.14, 3: 0.12, 4: 0.10, 5: 0.06, 6: 0.03}
         df["course_advantage"] = df["boat_no"].map(course_advantage)
 
@@ -194,20 +194,20 @@ class FeatureEngineering:
         include_historical: bool = True,
     ) -> pd.DataFrame:
         """
-        全ての特徴量を生成
+        Generate all features
 
         Args:
-            programs_df: 番組表エントリーデータ
-            results_df: レース結果データ
-            include_historical: 履歴特徴量を含めるか
+            programs_df: Program entry data
+            results_df: Race results data
+            include_historical: Whether to include historical features
 
         Returns:
-            全特徴量のDataFrame
+            DataFrame of all features
         """
-        # 基本特徴量
+        # Base features
         features = self.create_base_features(programs_df)
 
-        # 履歴特徴量
+        # Historical features
         if include_historical and results_df is not None:
             historical = self.create_historical_features(programs_df, results_df)
             features = features.merge(
@@ -216,26 +216,26 @@ class FeatureEngineering:
                 how="left",
             )
 
-        # 相対特徴量
+        # Relative features
         features = self.create_relative_features(features)
 
         return features
 
 
 def get_feature_columns() -> list[str]:
-    """モデルに入力する特徴量カラム名のリスト"""
+    """List of feature column names to input to the model"""
     return [
-        # 基本特徴量
+        # Base features
         "national_win_rate", "national_in2_rate",
         "local_win_rate", "local_in2_rate",
         "age", "weight", "class_encoded",
         "motor_in2_rate", "boat_in2_rate",
-        # 履歴特徴量
+        # Historical features
         "recent_win_rate", "recent_in2_rate", "recent_in3_rate",
         "recent_avg_rank", "recent_avg_st", "recent_race_count",
         "local_recent_win_rate", "local_race_count",
         "course_win_rate",
-        # 相対特徴量
+        # Relative features
         "win_rate_rank", "win_rate_diff_from_avg",
         "motor_rate_rank", "boat_rate_rank",
         "course_advantage",

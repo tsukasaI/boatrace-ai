@@ -19,6 +19,7 @@ from src.preprocessing.parser import (
     RacerEntry,
     RaceResult,
     convert_to_csv,
+    normalize_fullwidth_numbers,
 )
 
 
@@ -27,10 +28,9 @@ class TestProgramParser:
 
     def test_normalize_number(self):
         """Test full-width to half-width number conversion"""
-        parser = ProgramParser()
-        assert parser._normalize_number("１２３") == "123"
-        assert parser._normalize_number("０９") == "09"
-        assert parser._normalize_number("abc123") == "abc123"
+        assert normalize_fullwidth_numbers("１２３") == "123"
+        assert normalize_fullwidth_numbers("０９") == "09"
+        assert normalize_fullwidth_numbers("abc123") == "abc123"
 
     def test_parse_racer_line_regex(self):
         """Test parsing racer line with regex pattern"""
@@ -131,10 +131,9 @@ class TestResultParser:
 
     def test_normalize_number(self):
         """Test full-width to half-width number conversion"""
-        parser = ResultParser()
         # Only numbers are converted, not letters
-        assert parser._normalize_number("１２Ｒ") == "12Ｒ"
-        assert parser._normalize_number("１２３") == "123"
+        assert normalize_fullwidth_numbers("１２Ｒ") == "12Ｒ"
+        assert normalize_fullwidth_numbers("１２３") == "123"
 
     def test_parse_result_line(self):
         """Test parsing result line"""

@@ -1,7 +1,7 @@
 """
-競艇AI予測モデル
+Boat Race AI Prediction Model
 
-Phase 2: モデル構築
+Phase 2: Model Construction
 """
 
 from src.models.features import FeatureEngineering, get_feature_columns
