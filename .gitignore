@@ -51,3 +51,7 @@ notebooks/*.ipynb
 
 # Logs
 *.log
+
+# Rust
+rust-api/target/
+**/*.rs.bk

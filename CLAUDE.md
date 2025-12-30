@@ -10,7 +10,7 @@ This is a Japanese boat racing (競艇/Kyotei) AI prediction system. The goal is
 - **ML Framework**: LightGBM (gradient boosting for tabular data)
 - **Hyperparameter Tuning**: Optuna
 - **Data Processing**: pandas, numpy
-- **Inference API**: Go or Rust (Phase 4 - not yet implemented)
+- **Inference API**: Rust + actix-web
 - **Data Source**: Official boat race website (boatrace.jp)
 
 ## Project Structure
@@ -41,7 +41,14 @@ boatrace-ai/
 │   │   ├── simulator.py         # Backtest simulator with EV strategy
 │   │   ├── metrics.py           # ROI, hit rate, drawdown calculations
 │   │   └── report.py            # CSV/text report generation
-│   └── api/                     # Inference API (Phase 4)
+│   └── api/                     # (unused - using rust-api instead)
+├── rust-api/                    # Rust inference API
+│   ├── src/
+│   │   ├── main.rs              # HTTP server (actix-web)
+│   │   ├── models.rs            # Request/response types
+│   │   ├── predictor.rs         # Prediction logic (mock → ONNX)
+│   │   └── handlers/            # Route handlers
+│   └── Cargo.toml               # Rust dependencies
 └── notebooks/                   # Jupyter exploration
 ```
 
@@ -67,10 +74,12 @@ boatrace-ai/
 4. ✅ Analysis by stadium, race type, odds range
 5. ⬚ Run backtest on full dataset
 
-### Phase 4: Inference API & UI 🔲 TODO
-1. Build REST API in Go or Rust
-2. Simple dashboard for daily predictions
-3. Real-time odds integration
+### Phase 4: Inference API ✅ IN PROGRESS
+1. ✅ Rust REST API with actix-web
+2. ✅ Endpoints: /health, /predict, /predict/exacta
+3. ✅ Mock predictor with statistical heuristics
+4. ⬚ Replace mock with ONNX model loading
+5. ⬚ Web dashboard for daily predictions
 
 ## Commands
 
@@ -124,6 +133,26 @@ uv run python -m src.backtesting.simulator --max-bets 5
 uv run python -m src.backtesting.simulator --all-data
 ```
 
+### Phase 4: Rust API
+```bash
+# Build and check
+cd rust-api && cargo check
+
+# Run tests
+cd rust-api && cargo test
+
+# Start server (default: http://127.0.0.1:8080)
+cd rust-api && cargo run
+
+# Custom host/port
+HOST=0.0.0.0 PORT=3000 cargo run
+```
+
+#### API Endpoints
+- `GET /health` - Health check
+- `POST /predict` - Full prediction (position probs + exacta + value bets)
+- `POST /predict/exacta` - Exacta predictions only (top 10)
+
 ## Data URLs
 
 - Race Results: `https://www1.mbrace.or.jp/od2/K/{YYYYMM}/k{YYMMDD}.lzh`
@@ -172,6 +201,7 @@ P(boat_i=1st, boat_j=2nd) ≈ P(boat_i=1st) × P(boat_j=2nd) / (1 - P(boat_j=1st
 - [ ] Run extractor and parser on full dataset
 - [ ] Train model and evaluate baseline accuracy
 - [ ] Run backtest and analyze ROI
+- [ ] Add ONNX model loading to Rust API
 
 ### Short-term
 - [ ] Add weather/water condition features (requires scraping)
@@ -179,7 +209,6 @@ P(boat_i=1st, boat_j=2nd) ≈ P(boat_i=1st) × P(boat_j=2nd) / (1 - P(boat_j=1st
 - [ ] Tune EV threshold based on backtest results
 
 ### Long-term
-- [ ] Build inference API (Go/Rust)
 - [ ] Add support for 3連単, 3連複
 - [ ] Implement Kelly criterion for bet sizing
 - [ ] Create web dashboard

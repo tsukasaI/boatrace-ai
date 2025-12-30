@@ -1,0 +1,27 @@
+[package]
+name = "boatrace-api"
+version = "0.1.0"
+edition = "2021"
+description = "Boatrace AI prediction API"
+
+[dependencies]
+# Web framework
+actix-web = "4"
+actix-rt = "2"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Environment
+dotenvy = "0.15"
+
+[dev-dependencies]
+actix-rt = "2"
