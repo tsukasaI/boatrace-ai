@@ -29,7 +29,6 @@ boatrace-ai/
 ├── rust-api/                 # Rust inference API
 ├── models/                   # Saved models (pkl, onnx)
 ├── tests/                    # Test suite
-├── notebooks/                # Jupyter exploration
 ├── requirements.txt
 └── README.md
 ```
@@ -83,11 +82,29 @@ uv run python -m src.backtesting.simulator --use-real-odds
 uv run python -m src.backtesting.simulator --synthetic-odds
 ```
 
-### Phase 4: Rust API
+### Phase 4: Rust Inference API
 
 ```bash
 cd rust-api && cargo run
-# Endpoints: GET /health, POST /predict, POST /predict/exacta
+# GET  /health        - Health check
+# POST /predict       - Full prediction
+# POST /predict/exacta - Exacta only
+```
+
+### Phase 4.5: CLI Prediction
+
+```bash
+# Interactive mode
+uv run python -m src.cli.predict --interactive
+
+# Single race prediction
+uv run python -m src.cli.predict --date 20251230 --stadium 23 --race 1
+
+# With trifecta
+uv run python -m src.cli.predict -d 20251230 -s 23 -r 1 --trifecta
+
+# List available races
+uv run python -m src.cli.predict --list 20251230
 ```
 
 ### Phase 5: Odds Collection
@@ -120,7 +137,8 @@ uv run python -m src.data_collection.odds_scraper --list-stadiums
 - [x] Phase 1: Data Collection & Exploration
 - [x] Phase 2: Model Building
 - [x] Phase 3: Backtesting
-- [x] Phase 4: Inference API (Rust)
+- [x] Phase 4: Rust Inference API
+- [x] Phase 4.5: CLI Prediction Tool
 - [x] Phase 5: Real-time Odds Scraping
 
 ## Supported Bet Types
@@ -141,6 +159,6 @@ Buy only when expected_value > 1.0
 ## Future Extensions
 
 - Quinella (unordered exacta) support
-- Web dashboard for daily predictions
+- Weather/water condition features
 - Deep learning models (Transformer)
-- Docker containerization
+- Profit tracking & performance reports

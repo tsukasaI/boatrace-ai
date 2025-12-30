@@ -50,7 +50,8 @@ boatrace-ai/
 │   │   ├── metrics.py           # ROI, hit rate, drawdown calculations
 │   │   ├── report.py            # CSV/text report generation
 │   │   └── synthetic_odds.py    # Synthetic odds generator
-│   └── api/                     # (deprecated - using rust-api)
+│   └── cli/
+│       └── predict.py           # CLI prediction tool
 ├── rust-api/                    # Rust inference API
 │   ├── src/
 │   │   ├── main.rs              # HTTP server (actix-web)
@@ -91,7 +92,6 @@ boatrace-ai/
 2. ✅ Endpoints: /health, /predict, /predict/exacta
 3. ✅ ONNX Runtime inference in Rust
 4. ✅ Fallback predictor when models unavailable
-5. ✅ Proper error handling with graceful fallback
 
 ### Phase 4.5: CLI Tool ✅ COMPLETE
 1. ✅ Interactive prediction mode
@@ -203,28 +203,16 @@ uv run python -m src.cli.predict -d 20240115 -s 23 -r 1 --bankroll 50000 --kelly
 uv run python -m src.cli.predict --list 20240115
 ```
 
-### Phase 4: Rust API
+### Rust API
 ```bash
-# Build and check
-cd rust-api && cargo check
-
-# Run tests
-cd rust-api && cargo test
-
-# Start server (default: http://127.0.0.1:8080)
+# Build and run
 cd rust-api && cargo run
 
-# Custom host/port
-HOST=0.0.0.0 PORT=3000 cargo run
-
-# With ONNX models (default: ../models/onnx)
-MODEL_DIR=/path/to/models/onnx cargo run
+# Endpoints
+# GET  /health        - Health check
+# POST /predict       - Full prediction
+# POST /predict/exacta - Exacta only
 ```
-
-#### API Endpoints
-- `GET /health` - Health check (returns model_loaded status)
-- `POST /predict` - Full prediction (position probs + exacta + value bets)
-- `POST /predict/exacta` - Exacta predictions only (top 10)
 
 ## Data URLs
 
@@ -295,29 +283,18 @@ real-time odds scraping from boatrace.jp is required.
 - [x] Integrate real odds with backtester (--use-real-odds flag)
 - [x] JSON storage with date/stadium/race indexing
 
-### Phase 6: Production Deployment
-- [ ] Docker containerization for Rust API
-- [ ] CI/CD pipeline with GitHub Actions
-- [ ] Health monitoring and alerting
-- [ ] Rate limiting and authentication
-
-### Phase 7: Enhanced Features
+### Phase 6: Model Improvements
 - [ ] Weather/water condition features (scrape from boatrace.jp)
-- [ ] ~~Support for trifecta and trio bet types~~ ✅ Done
-- [ ] ~~Kelly criterion for optimal bet sizing~~ ✅ Done
 - [ ] Quinella (unordered exacta) support
-
-### Phase 8: User Interface
-- [ ] Web dashboard for daily predictions
-- [ ] Mobile-friendly responsive design
-- [ ] Historical performance tracking
-- [ ] Customizable betting strategies
-
-### Phase 9: Advanced ML
 - [ ] Deep learning models (Transformer, LSTM)
 - [ ] Ensemble methods
-- [ ] Online learning for model updates
-- [ ] Feature importance analysis dashboard
+- [ ] Feature importance analysis
+
+### Phase 7: CLI Enhancements
+- [ ] Auto-collect today's odds before prediction
+- [ ] Batch prediction for multiple races
+- [ ] Historical performance tracking (local SQLite)
+- [ ] Profit/loss summary reports
 
 ## References
 
