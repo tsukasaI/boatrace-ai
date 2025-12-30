@@ -72,6 +72,21 @@ class RaceResult:
     start_timing: float   # スタートタイミング
 
 
+@dataclass
+class RacePayouts:
+    """レース払戻金"""
+    date: str
+    stadium_code: int
+    race_no: int
+    win: dict              # 単勝 {boat: payout}
+    place: dict            # 複勝 {boat: payout}
+    exacta: dict           # 2連単 {(1st, 2nd): payout}
+    quinella: dict         # 2連複 {(a, b): payout}
+    wide: dict             # ワイド {(a, b): payout}
+    trifecta: dict         # 3連単 {(1st, 2nd, 3rd): payout}
+    trio: dict             # 3連複 {(a, b, c): payout}
+
+
 class ProgramParser:
     """番組表パーサー"""
     
@@ -392,6 +407,148 @@ class ResultParser:
             yield current_race, current_results
 
 
+class PayoutParser:
+    """払戻金パーサー"""
+
+    STADIUM_PATTERN = re.compile(r'^(\d{2})KBGN')
+    RACE_PATTERN = re.compile(r'^\s*(\d+)R\s+')
+
+    # 払戻金パターン
+    WIN_PATTERN = re.compile(r'単勝\s+(\d)\s+(\d+)')
+    PLACE_PATTERN = re.compile(r'複勝\s+(\d)\s+(\d+)')
+    EXACTA_PATTERN = re.compile(r'２連単\s+(\d)-(\d)\s+(\d+)')
+    QUINELLA_PATTERN = re.compile(r'２連複\s+(\d)-(\d)\s+(\d+)')
+    WIDE_PATTERN = re.compile(r'(?:ワイド|ﾜｲﾄﾞ)\s+(\d)-(\d)\s+(\d+)')
+    TRIFECTA_PATTERN = re.compile(r'３連単\s+(\d)-(\d)-(\d)\s+(\d+)')
+    TRIO_PATTERN = re.compile(r'３連複\s+(\d)-(\d)-(\d)\s+(\d+)')
+
+    def __init__(self, encoding: str = "cp932"):
+        self.encoding = encoding
+
+    def parse_file(self, file_path: Path) -> Generator[RacePayouts, None, None]:
+        """払戻金ファイルをパース"""
+        try:
+            content = file_path.read_text(encoding=self.encoding)
+        except UnicodeDecodeError:
+            content = file_path.read_text(encoding="utf-8", errors="ignore")
+
+        lines = content.split("\n")
+        date_str = file_path.stem.split("_")[-1]
+
+        current_stadium = None
+        current_race_no = None
+        current_payouts = self._empty_payouts()
+        in_payout_section = False
+
+        for line in lines:
+            # レース場識別
+            stadium_match = self.STADIUM_PATTERN.match(line)
+            if stadium_match:
+                current_stadium = int(stadium_match.group(1))
+                continue
+
+            # レース番号
+            race_match = self.RACE_PATTERN.match(line)
+            if race_match and current_stadium:
+                # 前のレースがあれば出力
+                if current_race_no and self._has_payouts(current_payouts):
+                    yield RacePayouts(
+                        date=date_str,
+                        stadium_code=current_stadium,
+                        race_no=current_race_no,
+                        **current_payouts,
+                    )
+
+                current_race_no = int(race_match.group(1))
+                current_payouts = self._empty_payouts()
+                in_payout_section = False
+                continue
+
+            # 払戻金セクション検出
+            if "単勝" in line or "２連単" in line or "３連単" in line:
+                in_payout_section = True
+
+            # 払戻金パース
+            if in_payout_section and current_race_no:
+                self._parse_payout_line(line, current_payouts)
+
+        # 最後のレース
+        if current_race_no and current_stadium and self._has_payouts(current_payouts):
+            yield RacePayouts(
+                date=date_str,
+                stadium_code=current_stadium,
+                race_no=current_race_no,
+                **current_payouts,
+            )
+
+    def _empty_payouts(self) -> dict:
+        """空の払戻金辞書を返す"""
+        return {
+            "win": {},
+            "place": {},
+            "exacta": {},
+            "quinella": {},
+            "wide": {},
+            "trifecta": {},
+            "trio": {},
+        }
+
+    def _has_payouts(self, payouts: dict) -> bool:
+        """払戻金データがあるか確認"""
+        return any(len(v) > 0 for v in payouts.values())
+
+    def _parse_payout_line(self, line: str, payouts: dict) -> None:
+        """払戻金行をパース"""
+        # 単勝
+        for match in self.WIN_PATTERN.finditer(line):
+            boat = int(match.group(1))
+            payout = int(match.group(2))
+            payouts["win"][boat] = payout
+
+        # 複勝
+        for match in self.PLACE_PATTERN.finditer(line):
+            boat = int(match.group(1))
+            payout = int(match.group(2))
+            payouts["place"][boat] = payout
+
+        # 2連単
+        for match in self.EXACTA_PATTERN.finditer(line):
+            first = int(match.group(1))
+            second = int(match.group(2))
+            payout = int(match.group(3))
+            payouts["exacta"][(first, second)] = payout
+
+        # 2連複
+        for match in self.QUINELLA_PATTERN.finditer(line):
+            a = int(match.group(1))
+            b = int(match.group(2))
+            payout = int(match.group(3))
+            payouts["quinella"][tuple(sorted([a, b]))] = payout
+
+        # ワイド
+        for match in self.WIDE_PATTERN.finditer(line):
+            a = int(match.group(1))
+            b = int(match.group(2))
+            payout = int(match.group(3))
+            payouts["wide"][tuple(sorted([a, b]))] = payout
+
+        # 3連単
+        for match in self.TRIFECTA_PATTERN.finditer(line):
+            first = int(match.group(1))
+            second = int(match.group(2))
+            third = int(match.group(3))
+            payout = int(match.group(4))
+            payouts["trifecta"][(first, second, third)] = payout
+
+        # 3連複
+        for match in self.TRIO_PATTERN.finditer(line):
+            a = int(match.group(1))
+            b = int(match.group(2))
+            c = int(match.group(3))
+            payout = int(match.group(4))
+            payouts["trio"][tuple(sorted([a, b, c]))] = payout
+
+
 def convert_to_csv(input_dir: Path, output_dir: Path, data_type: str = "programs"):
     """
     テキストファイルをCSVに変換
@@ -447,10 +604,62 @@ def convert_to_csv(input_dir: Path, output_dir: Path, data_type: str = "programs
         logger.info(f"Saved {len(entries_df)} entries to {data_type}_entries.csv")
 
 
+def convert_payouts_to_csv(input_dir: Path, output_dir: Path):
+    """
+    払戻金データをCSVに変換
+
+    Args:
+        input_dir: 入力ディレクトリ
+        output_dir: 出力ディレクトリ
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    parser = PayoutParser()
+    all_payouts = []
+
+    txt_files = list((input_dir / "results").glob("*.txt"))
+    logger.info(f"Processing {len(txt_files)} files for payouts")
+
+    for txt_path in tqdm(txt_files, desc="Parsing payouts", unit="file"):
+        for payout in parser.parse_file(txt_path):
+            # 2連単のみをフラット化して保存（バックテスト用）
+            for combo, pay in payout.exacta.items():
+                all_payouts.append({
+                    "date": payout.date,
+                    "stadium_code": payout.stadium_code,
+                    "race_no": payout.race_no,
+                    "bet_type": "exacta",
+                    "first": combo[0],
+                    "second": combo[1],
+                    "payout": pay,
+                    "odds": pay / 100,  # 100円あたりの払戻金 → オッズ
+                })
+
+            # 3連単も保存
+            for combo, pay in payout.trifecta.items():
+                all_payouts.append({
+                    "date": payout.date,
+                    "stadium_code": payout.stadium_code,
+                    "race_no": payout.race_no,
+                    "bet_type": "trifecta",
+                    "first": combo[0],
+                    "second": combo[1],
+                    "third": combo[2] if len(combo) > 2 else 0,
+                    "payout": pay,
+                    "odds": pay / 100,
+                })
+
+    if all_payouts:
+        payouts_df = pd.DataFrame(all_payouts)
+        payouts_df.to_csv(output_dir / "payouts.csv", index=False)
+        logger.info(f"Saved {len(payouts_df)} payout records to payouts.csv")
+
+
 def main():
     """メイン処理"""
     convert_to_csv(RAW_DATA_DIR, PROCESSED_DATA_DIR, "programs")
     convert_to_csv(RAW_DATA_DIR, PROCESSED_DATA_DIR, "results")
+    convert_payouts_to_csv(RAW_DATA_DIR, PROCESSED_DATA_DIR)
 
 
 if __name__ == "__main__":
