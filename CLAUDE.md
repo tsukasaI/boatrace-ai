@@ -240,6 +240,14 @@ cargo run --features cli --bin boatrace-cli -- --data-dir ../data/processed -i
 cargo run --features cli --bin boatrace-cli -- --data-dir ../data/processed --odds-dir ../data/odds \
   backtest --threshold 1.1 --all-data
 
+# Backtest with ONNX model (better predictions)
+cargo run --features cli --bin boatrace-cli -- --data-dir ../data/processed --odds-dir ../data/odds \
+  backtest --all-data --model-dir ../models/onnx
+
+# Backtest with synthetic odds (when real odds unavailable)
+cargo run --features cli --bin boatrace-cli -- --data-dir ../data/processed \
+  backtest --all-data --model-dir ../models/onnx --synthetic-odds
+
 # Parse raw data files (CP932 -> CSV)
 cargo run --features cli --bin boatrace-cli -- parse -i ../data/raw/programs -o ../data/processed -t programs
 cargo run --features cli --bin boatrace-cli -- parse -i ../data/raw/results -o ../data/processed -t results
@@ -328,7 +336,27 @@ Using payout CSV as odds fallback causes data leakage:
 - Results in unrealistic 90%+ hit rates
 - Always use `--synthetic-odds` for honest historical evaluation
 
-## Backtest Results (Synthetic Odds)
+## Backtest Results
+
+### Rust CLI (ONNX + Synthetic Odds)
+
+Using ONNX model with synthetic odds (25% margin) on 36,549 races:
+
+| Metric | Value |
+|--------|-------|
+| Total bets | 109,647 |
+| Winning bets | 813 |
+| ROI | **+0.8%** |
+| Hit rate | 0.7% |
+| Profit factor | 1.01 |
+
+```bash
+cargo run --features full --bin boatrace-cli -- \
+  --data-dir ../data/processed \
+  backtest --all-data --model-dir ../models/onnx --synthetic-odds
+```
+
+### Python (Synthetic Odds)
 
 Using synthetic odds with 70% market efficiency and 25% takeout:
 
@@ -340,9 +368,9 @@ Using synthetic odds with 70% market efficiency and 25% takeout:
 | 1.5 | 22 | 3 | +193% | 13.6% | 1.55 |
 
 **Key Insights:**
+- Rust ONNX model shows slight profitability (+0.8% ROI)
 - Higher EV thresholds reduce volume but improve ROI
 - EV > 1.5 shows profitability but with very few opportunities
-- Real odds data needed for accurate validation
 
 **Note:** These results use synthetic odds (simulated market). For production validation,
 real-time odds scraping from boatrace.jp is required.

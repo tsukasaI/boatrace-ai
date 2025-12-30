@@ -95,6 +95,15 @@ boatrace-cli backtest --threshold 1.1
 # Use all historical data
 boatrace-cli backtest --all-data
 
+# With ONNX model (better predictions)
+boatrace-cli backtest --all-data --model-dir ../models/onnx
+
+# With synthetic odds (when real odds unavailable)
+boatrace-cli backtest --all-data --synthetic-odds
+
+# Full backtest: ONNX model + synthetic odds
+boatrace-cli backtest --all-data --model-dir ../models/onnx --synthetic-odds
+
 # Custom parameters
 boatrace-cli backtest --threshold 1.2 --stake 1000 --max-bets 5
 ```
@@ -105,6 +114,8 @@ Options:
 - `--max-bets <INT>` - Maximum bets per race (default: 3)
 - `--test-start <YYYYMMDD>` - Test period start date (default: 20240701)
 - `--all-data` - Use all data, ignore test_start filter
+- `--model-dir <PATH>` - Path to ONNX models (uses fallback if not specified)
+- `--synthetic-odds` - Use synthetic odds when real odds unavailable
 
 #### `scrape` - Scrape Odds (requires `scraper` feature)
 
