@@ -353,15 +353,11 @@ class OddsScraper:
                     current_second[col_idx] = second_boat
                     cell_idx += 1
 
-                    # Next cell is 3rd place boat
+                    # Next cell is 3rd place boat (use TEXT, not class - class shows 2nd place color)
                     if cell_idx >= len(cells):
                         break
                     third_cell = cells[cell_idx]
-                    third_boat = self._get_boat_number(third_cell)
-                    if third_boat is None:
-                        text = third_cell.get_text(strip=True)
-                        if text.isdigit():
-                            third_boat = int(text)
+                    third_boat = self._get_boat_number_from_text(third_cell)
                     cell_idx += 1
 
                     # Next cell is odds
@@ -377,12 +373,8 @@ class OddsScraper:
                     # No rowspan - use current 2nd place boat
                     second_boat = current_second[col_idx]
 
-                    # This cell is 3rd place boat
-                    third_boat = self._get_boat_number(cell)
-                    if third_boat is None:
-                        text = cell.get_text(strip=True)
-                        if text.isdigit():
-                            third_boat = int(text)
+                    # This cell is 3rd place boat (use TEXT, not class)
+                    third_boat = self._get_boat_number_from_text(cell)
                     cell_idx += 1
 
                     # Next cell is odds
@@ -409,6 +401,17 @@ class OddsScraper:
                     return i
 
         # Try to parse from text content
+        text = cell.get_text(strip=True)
+        if text.isdigit() and 1 <= int(text) <= 6:
+            return int(text)
+
+        return None
+
+    def _get_boat_number_from_text(self, cell) -> Optional[int]:
+        """Extract boat number from cell text (for trifecta 3rd place cells)"""
+        if cell is None:
+            return None
+
         text = cell.get_text(strip=True)
         if text.isdigit() and 1 <= int(text) <= 6:
             return int(text)

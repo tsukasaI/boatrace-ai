@@ -39,6 +39,7 @@ Thumbs.db
 data/raw/
 data/processed/
 data/odds/
+tmp/
 models/*.pkl
 models/*.joblib
 models/onnx/
