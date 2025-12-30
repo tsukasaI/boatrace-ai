@@ -1,0 +1,28 @@
+# 競艇AI予測システム - 依存パッケージ
+# Updated: 2025-12-30
+
+# データ取得
+requests>=2.32.0
+
+# LZH解凍
+lhafile>=0.3.0
+
+# データ処理
+pandas>=2.2.0
+numpy>=2.0.0
+tqdm>=4.66.0
+
+# 機械学習（Phase 2で使用）
+scikit-learn>=1.5.0
+lightgbm>=4.0.0
+optuna>=3.0.0
+
+# Jupyter（探索用）
+jupyter>=1.1.0
+matplotlib>=3.9.0
+seaborn>=0.13.0
+
+# 開発ツール
+pytest>=8.0.0
+black>=24.0.0
+ruff>=0.4.0
