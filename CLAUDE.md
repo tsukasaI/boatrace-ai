@@ -52,13 +52,19 @@ boatrace-ai/
 │   │   └── synthetic_odds.py    # Synthetic odds generator
 │   └── cli/
 │       └── predict.py           # CLI prediction tool
-├── rust-api/                    # Rust inference API
+├── rust-api/                    # Rust prediction system (API + CLI)
 │   ├── src/
-│   │   ├── main.rs              # HTTP server (actix-web)
+│   │   ├── lib.rs               # Library entry point
+│   │   ├── main.rs              # API server binary (actix-web)
+│   │   ├── bin/cli.rs           # CLI binary
+│   │   ├── core/                # Core business logic
+│   │   │   ├── mod.rs
+│   │   │   └── kelly.rs         # Kelly criterion bet sizing
 │   │   ├── models.rs            # Request/response types
-│   │   ├── predictor.rs         # ONNX inference + fallback predictor
+│   │   ├── predictor.rs         # ONNX inference + exacta/trifecta
+│   │   ├── error.rs             # Error types and validation
 │   │   └── handlers/            # Route handlers (health, predict)
-│   └── Cargo.toml               # Rust dependencies
+│   └── Cargo.toml               # Rust dependencies with feature flags
 ├── tests/                       # Python test suite
 └── notebooks/                   # Jupyter exploration
 ```
@@ -203,15 +209,31 @@ uv run python -m src.cli.predict -d 20240115 -s 23 -r 1 --bankroll 50000 --kelly
 uv run python -m src.cli.predict --list 20240115
 ```
 
-### Rust API
+### Rust API & CLI
 ```bash
-# Build and run
-cd rust-api && cargo run
+cd rust-api
 
-# Endpoints
-# GET  /health        - Health check
-# POST /predict       - Full prediction
-# POST /predict/exacta - Exacta only
+# Run API server
+cargo run --bin boatrace-api
+
+# Run CLI
+cargo run --bin boatrace-cli -- --help
+cargo run --bin boatrace-cli -- predict -d 20241230 -s 23 -r 1
+cargo run --bin boatrace-cli -- predict -d 20241230 -s 23 -r 1 --trifecta
+cargo run --bin boatrace-cli -- list -d 20241230
+
+# Build with specific features
+cargo build --features api        # API only
+cargo build --features cli        # CLI only
+cargo build --features full       # All features
+
+# Run tests
+cargo test
+
+# API Endpoints
+# GET  /health         - Health check
+# POST /predict        - Full prediction (exacta + position probs)
+# POST /predict/exacta - Exacta only (top 10)
 ```
 
 ## Data URLs
@@ -302,29 +324,46 @@ real-time odds scraping from boatrace.jp is required.
 - [x] Integrate real odds with backtester (--use-real-odds flag)
 - [x] JSON storage with date/stadium/race indexing
 
-### Phase 6: Rust Refactoring ← CURRENT
+### Phase 6: Rust Consolidation ← CURRENT
 Migrate core functionality from Python to Rust for performance and single binary deployment.
 
-**Priority order:**
-1. [ ] **Odds scraper in Rust** - Replace Python BeautifulSoup with Rust reqwest + scraper
-2. [ ] **Feature engineering in Rust** - Move pandas logic to Rust (polars or native)
-3. [ ] **CLI in Rust** - Single binary for predictions (no Python dependency)
-4. [ ] **Daily collection in Rust** - Unified data pipeline
+**Completed (Phase 6.1):**
+- [x] Restructure crate as library + binaries (boatrace-api, boatrace-cli)
+- [x] Feature flags: `api`, `cli`, `scraper`
+- [x] Trifecta (3連単) probability calculation (120 combinations)
+- [x] Kelly criterion module with fractional Kelly support
+- [x] CLI binary skeleton with clap
+- [x] 25 unit tests
+
+**Remaining:**
+- [ ] **Phase 6.2: Data loading** - CSV loader (polars), odds JSON loader
+- [ ] **Phase 6.3: CLI enhancement** - Interactive mode (dialoguer)
+- [ ] **Phase 6.4: Feature engineering** - Move pandas logic to Rust
+- [ ] **Phase 6.5: Backtesting** - Simulator and metrics in Rust
+- [ ] **Phase 6.6: Odds scraper** - reqwest + scraper crate
+- [ ] **Phase 6.7: Data parser** - Fixed-width text with CP932 encoding
 
 **Architecture:**
 ```
 rust-api/
+├── Cargo.toml            # Feature flags: api, cli, scraper
 ├── src/
-│   ├── main.rs           # HTTP server (existing)
-│   ├── cli.rs            # CLI interface (new)
-│   ├── scraper/          # Odds scraping (new)
+│   ├── lib.rs            # Library entry point
+│   ├── main.rs           # API server binary
+│   ├── bin/cli.rs        # CLI binary
+│   ├── core/
 │   │   ├── mod.rs
-│   │   ├── exacta.rs
-│   │   └── trifecta.rs
-│   ├── features/         # Feature engineering (new)
-│   ├── predictor.rs      # ONNX inference (existing)
-│   └── models.rs         # Data types (existing)
-└── Cargo.toml
+│   │   └── kelly.rs      # Kelly criterion ✅
+│   ├── data/             # Data loading (TODO)
+│   │   ├── csv_loader.rs
+│   │   ├── odds_loader.rs
+│   │   └── features.rs
+│   ├── scraper/          # Odds scraping (TODO)
+│   ├── backtesting/      # Backtesting (TODO)
+│   ├── predictor.rs      # ONNX + exacta/trifecta ✅
+│   ├── models.rs         # Data types ✅
+│   ├── error.rs          # Validation ✅
+│   └── handlers/         # HTTP handlers ✅
 ```
 
 ### Phase 7: Model Improvements

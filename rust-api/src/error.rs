@@ -61,7 +61,7 @@ pub fn validate_entries_count(count: usize) -> Result<(), AppError> {
 }
 
 pub fn validate_boat_number(boat_no: u8) -> Result<(), AppError> {
-    if boat_no < 1 || boat_no > 6 {
+    if !(1..=6).contains(&boat_no) {
         return Err(AppError::ValidationError(format!(
             "Boat number must be between 1 and 6, got {}",
             boat_no
@@ -81,7 +81,7 @@ pub fn validate_odds(odds: f64) -> Result<(), AppError> {
 }
 
 pub fn validate_probability(prob: f64) -> Result<(), AppError> {
-    if prob < 0.0 || prob > 1.0 {
+    if !(0.0..=1.0).contains(&prob) {
         return Err(AppError::ValidationError(format!(
             "Probability must be between 0 and 1, got {}",
             prob

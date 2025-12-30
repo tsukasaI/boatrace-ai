@@ -1,4 +1,4 @@
-use crate::models::{ExactaPrediction, PositionProb, RacerEntry};
+use crate::models::{ExactaPrediction, PositionProb, RacerEntry, TrifectaPrediction};
 use ort::{
     session::{builder::GraphOptimizationLevel, Session},
     value::Tensor,
@@ -179,8 +179,8 @@ impl Predictor {
         for pos in 0..6 {
             let sum: f64 = probs.iter().map(|p| p[pos]).sum();
             if sum > 0.0 {
-                for boat in 0..6 {
-                    probs[boat][pos] /= sum;
+                for prob in &mut probs {
+                    prob[pos] /= sum;
                 }
             }
         }
@@ -217,6 +217,59 @@ impl Predictor {
                     expected_value: None,
                     is_value_bet: false,
                 });
+            }
+        }
+
+        // Sort by probability descending
+        predictions.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
+
+        predictions
+    }
+
+    /// Calculate trifecta (3連単) probabilities - 120 combinations
+    ///
+    /// Formula: P(1st) × P(2nd|1st) × P(3rd|1st,2nd)
+    pub fn calculate_trifecta_probs(
+        &self,
+        position_probs: &[PositionProb],
+    ) -> Vec<TrifectaPrediction> {
+        let mut predictions = Vec::with_capacity(120);
+
+        for first in position_probs {
+            let p_first = first.probs[0]; // P(1st)
+
+            for second in position_probs {
+                if first.boat_no == second.boat_no {
+                    continue;
+                }
+
+                // Conditional probability: P(B=2nd | A=1st)
+                let p_second_given_first = second.probs[1] / (1.0 - second.probs[0]).max(0.01);
+
+                for third in position_probs {
+                    if third.boat_no == first.boat_no || third.boat_no == second.boat_no {
+                        continue;
+                    }
+
+                    // Conditional probability: P(C=3rd | A=1st, B=2nd)
+                    // Approximate: P(C=3rd) / P(C not in top 2)
+                    let p_third = third.probs[2];
+                    let p_third_not_top2 = (1.0 - third.probs[0] - third.probs[1]).max(0.01);
+                    let p_third_given = p_third / p_third_not_top2;
+
+                    // Trifecta probability
+                    let probability = p_first * p_second_given_first * p_third_given;
+
+                    predictions.push(TrifectaPrediction {
+                        first: first.boat_no,
+                        second: second.boat_no,
+                        third: third.boat_no,
+                        probability,
+                        odds: None,
+                        expected_value: None,
+                        is_value_bet: false,
+                    });
+                }
             }
         }
 
@@ -301,7 +354,7 @@ impl FallbackPredictor {
         ]
     }
 
-    fn normalize_probs(&self, probs: &mut Vec<PositionProb>) {
+    fn normalize_probs(&self, probs: &mut [PositionProb]) {
         for pos in 0..6 {
             let sum: f64 = probs.iter().map(|p| p.probs[pos]).sum();
             if sum > 0.0 {
@@ -333,6 +386,51 @@ impl FallbackPredictor {
                     expected_value: None,
                     is_value_bet: false,
                 });
+            }
+        }
+
+        predictions.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
+        predictions
+    }
+
+    /// Calculate trifecta (3連単) probabilities - 120 combinations
+    pub fn calculate_trifecta_probs(
+        &self,
+        position_probs: &[PositionProb],
+    ) -> Vec<TrifectaPrediction> {
+        let mut predictions = Vec::with_capacity(120);
+
+        for first in position_probs {
+            let p_first = first.probs[0];
+
+            for second in position_probs {
+                if first.boat_no == second.boat_no {
+                    continue;
+                }
+
+                let p_second_given_first = second.probs[1] / (1.0 - second.probs[0]).max(0.01);
+
+                for third in position_probs {
+                    if third.boat_no == first.boat_no || third.boat_no == second.boat_no {
+                        continue;
+                    }
+
+                    let p_third = third.probs[2];
+                    let p_third_not_top2 = (1.0 - third.probs[0] - third.probs[1]).max(0.01);
+                    let p_third_given = p_third / p_third_not_top2;
+
+                    let probability = p_first * p_second_given_first * p_third_given;
+
+                    predictions.push(TrifectaPrediction {
+                        first: first.boat_no,
+                        second: second.boat_no,
+                        third: third.boat_no,
+                        probability,
+                        odds: None,
+                        expected_value: None,
+                        is_value_bet: false,
+                    });
+                }
             }
         }
 
@@ -489,5 +587,46 @@ mod tests {
         for i in 1..exacta_probs.len() {
             assert!(exacta_probs[i - 1].probability >= exacta_probs[i].probability);
         }
+    }
+
+    #[test]
+    fn test_fallback_calculate_trifecta_probs() {
+        let predictor = FallbackPredictor::new();
+        let entries = sample_entries();
+        let position_probs = predictor.predict_positions(&entries);
+        let trifecta_probs = predictor.calculate_trifecta_probs(&position_probs);
+
+        // 6 × 5 × 4 = 120 combinations
+        assert_eq!(trifecta_probs.len(), 120);
+
+        for pred in &trifecta_probs {
+            assert!(pred.probability > 0.0);
+            assert!(pred.first != pred.second);
+            assert!(pred.first != pred.third);
+            assert!(pred.second != pred.third);
+        }
+
+        // Check sorted by probability descending
+        for i in 1..trifecta_probs.len() {
+            assert!(trifecta_probs[i - 1].probability >= trifecta_probs[i].probability);
+        }
+    }
+
+    #[test]
+    fn test_trifecta_probabilities_sum() {
+        let predictor = FallbackPredictor::new();
+        let entries = sample_entries();
+        let position_probs = predictor.predict_positions(&entries);
+        let trifecta_probs = predictor.calculate_trifecta_probs(&position_probs);
+
+        // Sum of all trifecta probabilities should be close to 1
+        // (allowing for approximation errors in conditional probability)
+        let total_prob: f64 = trifecta_probs.iter().map(|p| p.probability).sum();
+        assert!(total_prob > 0.5, "Total probability {} too low", total_prob);
+        assert!(
+            total_prob < 2.0,
+            "Total probability {} too high",
+            total_prob
+        );
     }
 }

@@ -1,30 +1,60 @@
 [package]
-name = "boatrace-api"
-version = "0.1.0"
+name = "boatrace"
+version = "0.2.0"
 edition = "2021"
-description = "Boatrace AI prediction API"
+description = "Boatrace AI prediction system - API and CLI"
+
+[lib]
+name = "boatrace"
+path = "src/lib.rs"
+
+[[bin]]
+name = "boatrace-api"
+path = "src/main.rs"
+required-features = ["api"]
+
+[[bin]]
+name = "boatrace-cli"
+path = "src/bin/cli.rs"
+required-features = ["cli"]
+
+[features]
+default = ["api", "cli"]
+api = ["dep:actix-web", "dep:actix-rt"]
+cli = ["dep:clap", "dep:dialoguer", "dep:indicatif", "dep:colored"]
+scraper = ["dep:reqwest", "dep:scraper"]
+full = ["api", "cli", "scraper"]
 
 [dependencies]
-# Web framework
-actix-web = "4"
-actix-rt = "2"
-
-# Serialization
+# Core (always included)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# Async runtime
 tokio = { version = "1", features = ["full"] }
-
-# Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# Environment
 dotenvy = "0.15"
+thiserror = "1"
+anyhow = "1"
 
 # ONNX Runtime
 ort = "2.0.0-rc.10"
+
+# Data processing
+polars = { version = "0.45", features = ["csv", "lazy"] }
+
+# Web framework (optional - API feature)
+actix-web = { version = "4", optional = true }
+actix-rt = { version = "2", optional = true }
+
+# CLI (optional - CLI feature)
+clap = { version = "4", features = ["derive"], optional = true }
+dialoguer = { version = "0.11", optional = true }
+indicatif = { version = "0.17", optional = true }
+colored = { version = "2", optional = true }
+
+# Web scraper (optional - scraper feature)
+reqwest = { version = "0.12", features = ["json"], optional = true }
+scraper = { version = "0.22", optional = true }
 
 [dev-dependencies]
 actix-rt = "2"

@@ -57,7 +57,7 @@ notebooks/*.ipynb
 
 # Rust
 rust-api/target/
-Cargo.lock
+# Note: Cargo.lock is committed for binary projects (reproducible builds)
 
 # Environment
 .env

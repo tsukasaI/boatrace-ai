@@ -38,6 +38,15 @@ pub struct ExactaOdds {
     pub odds: f64,
 }
 
+/// Trifecta odds data (3連単)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrifectaOdds {
+    pub first: u8,
+    pub second: u8,
+    pub third: u8,
+    pub odds: f64,
+}
+
 /// Position probability for a boat
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PositionProb {
@@ -50,6 +59,20 @@ pub struct PositionProb {
 pub struct ExactaPrediction {
     pub first: u8,
     pub second: u8,
+    pub probability: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub odds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_value: Option<f64>,
+    pub is_value_bet: bool,
+}
+
+/// Trifecta prediction (3連単)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrifectaPrediction {
+    pub first: u8,
+    pub second: u8,
+    pub third: u8,
     pub probability: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub odds: Option<f64>,

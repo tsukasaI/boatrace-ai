@@ -4,13 +4,11 @@ use std::sync::{Arc, Mutex};
 use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
-mod error;
+use boatrace::predictor::{FallbackPredictor, Predictor};
+
 mod handlers;
-mod models;
-mod predictor;
 
 use handlers::{health, predict};
-use predictor::{FallbackPredictor, Predictor};
 
 /// Application state shared across handlers
 pub struct AppState {
@@ -43,7 +41,10 @@ async fn main() -> std::io::Result<()> {
             Some(Mutex::new(p))
         }
         Err(e) => {
-            warn!("Failed to load ONNX models: {}. Using fallback predictor.", e);
+            warn!(
+                "Failed to load ONNX models: {}. Using fallback predictor.",
+                e
+            );
             None
         }
     };

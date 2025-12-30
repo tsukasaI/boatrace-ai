@@ -2,9 +2,9 @@ use actix_web::{web, HttpResponse};
 use std::sync::Arc;
 use tracing::warn;
 
-use crate::error::{validate_entries_count, AppError};
-use crate::models::{ExactaPrediction, PredictRequest, PredictResponse};
 use crate::AppState;
+use boatrace::error::{validate_entries_count, AppError};
+use boatrace::models::{ExactaPrediction, PredictRequest, PredictResponse};
 
 /// Predict race outcome
 pub async fn predict_race(
@@ -15,25 +15,26 @@ pub async fn predict_race(
     validate_entries_count(req.entries.len())?;
 
     // Get predictions using ONNX model, falling back on error
-    let (position_probs, mut exacta_predictions) = if let Some(ref predictor_mutex) = state.predictor {
-        let mut predictor = predictor_mutex.lock().unwrap();
-        match predictor.predict_positions(&req.entries) {
-            Ok(pos_probs) => {
-                let exacta_probs = predictor.calculate_exacta_probs(&pos_probs);
-                (pos_probs, exacta_probs)
+    let (position_probs, mut exacta_predictions) =
+        if let Some(ref predictor_mutex) = state.predictor {
+            let mut predictor = predictor_mutex.lock().unwrap();
+            match predictor.predict_positions(&req.entries) {
+                Ok(pos_probs) => {
+                    let exacta_probs = predictor.calculate_exacta_probs(&pos_probs);
+                    (pos_probs, exacta_probs)
+                }
+                Err(e) => {
+                    warn!("ONNX prediction failed, using fallback: {}", e);
+                    let pos_probs = state.fallback_predictor.predict_positions(&req.entries);
+                    let exacta_probs = state.fallback_predictor.calculate_exacta_probs(&pos_probs);
+                    (pos_probs, exacta_probs)
+                }
             }
-            Err(e) => {
-                warn!("ONNX prediction failed, using fallback: {}", e);
-                let pos_probs = state.fallback_predictor.predict_positions(&req.entries);
-                let exacta_probs = state.fallback_predictor.calculate_exacta_probs(&pos_probs);
-                (pos_probs, exacta_probs)
-            }
-        }
-    } else {
-        let pos_probs = state.fallback_predictor.predict_positions(&req.entries);
-        let exacta_probs = state.fallback_predictor.calculate_exacta_probs(&pos_probs);
-        (pos_probs, exacta_probs)
-    };
+        } else {
+            let pos_probs = state.fallback_predictor.predict_positions(&req.entries);
+            let exacta_probs = state.fallback_predictor.calculate_exacta_probs(&pos_probs);
+            (pos_probs, exacta_probs)
+        };
 
     // Add odds and EV if provided
     if let Some(ref odds_data) = req.odds {
@@ -76,25 +77,26 @@ pub async fn predict_exacta(
     validate_entries_count(req.entries.len())?;
 
     // Get predictions using ONNX model, falling back on error
-    let (position_probs, mut exacta_predictions) = if let Some(ref predictor_mutex) = state.predictor {
-        let mut predictor = predictor_mutex.lock().unwrap();
-        match predictor.predict_positions(&req.entries) {
-            Ok(pos_probs) => {
-                let exacta_probs = predictor.calculate_exacta_probs(&pos_probs);
-                (pos_probs, exacta_probs)
+    let (position_probs, mut exacta_predictions) =
+        if let Some(ref predictor_mutex) = state.predictor {
+            let mut predictor = predictor_mutex.lock().unwrap();
+            match predictor.predict_positions(&req.entries) {
+                Ok(pos_probs) => {
+                    let exacta_probs = predictor.calculate_exacta_probs(&pos_probs);
+                    (pos_probs, exacta_probs)
+                }
+                Err(e) => {
+                    warn!("ONNX prediction failed, using fallback: {}", e);
+                    let pos_probs = state.fallback_predictor.predict_positions(&req.entries);
+                    let exacta_probs = state.fallback_predictor.calculate_exacta_probs(&pos_probs);
+                    (pos_probs, exacta_probs)
+                }
             }
-            Err(e) => {
-                warn!("ONNX prediction failed, using fallback: {}", e);
-                let pos_probs = state.fallback_predictor.predict_positions(&req.entries);
-                let exacta_probs = state.fallback_predictor.calculate_exacta_probs(&pos_probs);
-                (pos_probs, exacta_probs)
-            }
-        }
-    } else {
-        let pos_probs = state.fallback_predictor.predict_positions(&req.entries);
-        let exacta_probs = state.fallback_predictor.calculate_exacta_probs(&pos_probs);
-        (pos_probs, exacta_probs)
-    };
+        } else {
+            let pos_probs = state.fallback_predictor.predict_positions(&req.entries);
+            let exacta_probs = state.fallback_predictor.calculate_exacta_probs(&pos_probs);
+            (pos_probs, exacta_probs)
+        };
     drop(position_probs); // unused in this endpoint
 
     // Add odds and EV if provided

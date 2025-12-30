@@ -1,8 +1,8 @@
 use actix_web::{web, HttpResponse, Responder};
 use std::sync::Arc;
 
-use crate::models::HealthResponse;
 use crate::AppState;
+use boatrace::models::HealthResponse;
 
 /// Health check endpoint
 pub async fn health_check(state: web::Data<Arc<AppState>>) -> impl Responder {
