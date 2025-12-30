@@ -16,6 +16,12 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data_collection.downloader import BoatraceDataDownloader
 from src.data_collection.extractor import LzhExtractor
+from src.data_collection.odds_scraper import (
+    OddsScraper,
+    ExactaOdds,
+    save_odds,
+    load_odds,
+)
 
 
 class TestBoatraceDataDownloader:
@@ -346,3 +352,161 @@ class TestLzhExtractor:
         assert stats["results"]["success"] == 0
         assert stats["results"]["skip"] == 0
         assert stats["results"]["fail"] == 0
+
+
+class TestOddsScraper:
+    """Tests for OddsScraper class"""
+
+    def test_build_url(self, tmp_path):
+        """Test URL building for odds page"""
+        scraper = OddsScraper()
+        url = scraper._build_url(20251230, 23, 1)
+
+        assert "rno=1" in url
+        assert "jcd=23" in url
+        assert "hd=20251230" in url
+        assert "odds2tf" in url
+
+    def test_build_url_stadium_padding(self, tmp_path):
+        """Test stadium code is zero-padded to 2 digits"""
+        scraper = OddsScraper()
+        url = scraper._build_url(20251230, 1, 5)
+
+        assert "jcd=01" in url
+        assert "rno=5" in url
+
+    def test_get_boat_number_from_class(self):
+        """Test extracting boat number from CSS class"""
+        from bs4 import BeautifulSoup
+
+        scraper = OddsScraper()
+
+        # Test each boat color class
+        for i in range(1, 7):
+            html = f'<td class="is-boatColor{i}">X</td>'
+            soup = BeautifulSoup(html, "lxml")
+            cell = soup.find("td")
+            assert scraper._get_boat_number(cell) == i
+
+    def test_get_boat_number_from_text(self):
+        """Test extracting boat number from cell text"""
+        from bs4 import BeautifulSoup
+
+        scraper = OddsScraper()
+
+        html = '<td class="other-class">3</td>'
+        soup = BeautifulSoup(html, "lxml")
+        cell = soup.find("td")
+        # Should fall back to parsing text
+        boat_num = scraper._get_boat_number(cell)
+        assert boat_num == 3
+
+    def test_parse_odds_value(self):
+        """Test parsing odds value from cell"""
+        from bs4 import BeautifulSoup
+
+        scraper = OddsScraper()
+
+        # Normal odds
+        html = '<td class="oddsPoint">12.5</td>'
+        soup = BeautifulSoup(html, "lxml")
+        cell = soup.find("td")
+        assert scraper._parse_odds_value(cell) == 12.5
+
+        # Large odds with comma
+        html = '<td class="oddsPoint">1,234.5</td>'
+        soup = BeautifulSoup(html, "lxml")
+        cell = soup.find("td")
+        assert scraper._parse_odds_value(cell) == 1234.5
+
+    def test_parse_odds_value_invalid(self):
+        """Test parsing invalid odds returns None"""
+        from bs4 import BeautifulSoup
+
+        scraper = OddsScraper()
+
+        # Dash (no odds)
+        html = '<td class="oddsPoint">-</td>'
+        soup = BeautifulSoup(html, "lxml")
+        cell = soup.find("td")
+        assert scraper._parse_odds_value(cell) is None
+
+        # Empty
+        html = '<td class="oddsPoint"></td>'
+        soup = BeautifulSoup(html, "lxml")
+        cell = soup.find("td")
+        assert scraper._parse_odds_value(cell) is None
+
+
+class TestExactaOdds:
+    """Tests for ExactaOdds dataclass"""
+
+    def test_to_json_dict(self):
+        """Test conversion to JSON-serializable dict"""
+        odds = ExactaOdds(
+            date=20251230,
+            stadium_code=23,
+            race_no=1,
+            scraped_at="2025-12-30T10:00:00",
+            odds={(1, 2): 5.5, (2, 1): 10.2},
+        )
+
+        json_dict = odds.to_json_dict()
+
+        assert json_dict["date"] == 20251230
+        assert json_dict["stadium_code"] == 23
+        assert json_dict["race_no"] == 1
+        assert json_dict["scraped_at"] == "2025-12-30T10:00:00"
+        assert json_dict["exacta"]["1-2"] == 5.5
+        assert json_dict["exacta"]["2-1"] == 10.2
+
+    def test_from_json_dict(self):
+        """Test creation from JSON dict"""
+        json_dict = {
+            "date": 20251230,
+            "stadium_code": 23,
+            "race_no": 1,
+            "scraped_at": "2025-12-30T10:00:00",
+            "exacta": {"1-2": 5.5, "2-1": 10.2},
+        }
+
+        odds = ExactaOdds.from_json_dict(json_dict)
+
+        assert odds.date == 20251230
+        assert odds.stadium_code == 23
+        assert odds.race_no == 1
+        assert odds.odds[(1, 2)] == 5.5
+        assert odds.odds[(2, 1)] == 10.2
+
+
+class TestOddsSaveLoad:
+    """Tests for save_odds and load_odds functions"""
+
+    def test_save_and_load_odds(self, tmp_path):
+        """Test saving and loading odds"""
+        odds = ExactaOdds(
+            date=20251230,
+            stadium_code=23,
+            race_no=1,
+            scraped_at="2025-12-30T10:00:00",
+            odds={(1, 2): 5.5, (1, 3): 8.2, (2, 1): 10.2},
+        )
+
+        # Save
+        filepath = save_odds(odds, tmp_path)
+        assert filepath.exists()
+        assert filepath.name == "20251230_23_01.json"
+
+        # Load
+        loaded = load_odds(20251230, 23, 1, tmp_path)
+        assert loaded is not None
+        assert loaded.date == 20251230
+        assert loaded.stadium_code == 23
+        assert loaded.race_no == 1
+        assert loaded.odds[(1, 2)] == 5.5
+        assert loaded.odds[(1, 3)] == 8.2
+
+    def test_load_nonexistent_odds(self, tmp_path):
+        """Test loading non-existent odds returns None"""
+        loaded = load_odds(20251230, 99, 1, tmp_path)
+        assert loaded is None

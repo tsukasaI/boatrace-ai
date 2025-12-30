@@ -4,6 +4,10 @@
 # データ取得
 requests>=2.32.0
 
+# Webスクレイピング（オッズ取得）
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
 # LZH解凍
 lhafile>=0.3.0
 
