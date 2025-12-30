@@ -1,6 +1,6 @@
 # Boat Race AI Prediction System
 
-An AI system for predicting exacta (2-consecutive) outcomes in Japanese boat racing (Kyotei).
+An AI system for predicting exacta/trifecta outcomes in Japanese boat racing (Kyotei).
 Aims to improve ROI using an expected value-based betting strategy.
 
 ## Project Structure
@@ -13,17 +13,22 @@ boatrace-ai/
 │   ├── raw/                  # Raw data (LZH, TXT)
 │   │   ├── results/          # Race results
 │   │   └── programs/         # Race programs
-│   └── processed/            # Processed data (CSV)
+│   ├── processed/            # Processed data (CSV)
+│   └── odds/                 # Scraped real-time odds (JSON)
 ├── src/
 │   ├── data_collection/      # Data collection
-│   │   ├── downloader.py     # Downloader
-│   │   └── extractor.py      # LZH extraction
+│   │   ├── downloader.py     # Download historical data
+│   │   ├── extractor.py      # LZH extraction
+│   │   ├── odds_scraper.py   # Real-time odds scraper
+│   │   └── collect_daily.py  # Daily odds collection
 │   ├── preprocessing/        # Preprocessing
 │   │   └── parser.py         # Parser
-│   ├── models/               # Prediction models (Phase 2)
-│   ├── backtesting/          # Backtesting (Phase 3)
-│   └── api/                  # Inference API (deprecated)
-├── rust-api/                 # Rust inference API (Phase 4)
+│   ├── models/               # Prediction models
+│   ├── backtesting/          # Backtesting simulator
+│   └── cli/                  # CLI prediction tool
+├── rust-api/                 # Rust inference API
+├── models/                   # Saved models (pkl, onnx)
+├── tests/                    # Test suite
 ├── notebooks/                # Jupyter exploration
 ├── requirements.txt
 └── README.md
@@ -70,6 +75,12 @@ uv run python src/models/export_onnx.py --verify
 ```bash
 # Run backtest with EV > 1.0 strategy
 uv run python -m src.backtesting.simulator
+
+# Use real scraped odds (with fallback to payout CSV)
+uv run python -m src.backtesting.simulator --use-real-odds
+
+# Use synthetic odds (for testing without data leakage)
+uv run python -m src.backtesting.simulator --synthetic-odds
 ```
 
 ### Phase 4: Rust API
@@ -77,6 +88,25 @@ uv run python -m src.backtesting.simulator
 ```bash
 cd rust-api && cargo run
 # Endpoints: GET /health, POST /predict, POST /predict/exacta
+```
+
+### Phase 5: Odds Collection
+
+```bash
+# Scrape single race exacta odds
+uv run python -m src.data_collection.odds_scraper -d 20251230 -s 23 -r 1
+
+# Scrape trifecta odds
+uv run python -m src.data_collection.odds_scraper -d 20251230 -s 23 -r 1 --trifecta
+
+# Collect all stadiums for a date
+uv run python -m src.data_collection.collect_daily --date 20251230
+
+# Collect trifecta odds for all stadiums
+uv run python -m src.data_collection.collect_daily --date 20251230 --trifecta
+
+# List stadium codes
+uv run python -m src.data_collection.odds_scraper --list-stadiums
 ```
 
 ## Data Sources
@@ -90,7 +120,15 @@ cd rust-api && cargo run
 - [x] Phase 1: Data Collection & Exploration
 - [x] Phase 2: Model Building
 - [x] Phase 3: Backtesting
-- [x] Phase 4: Inference API
+- [x] Phase 4: Inference API (Rust)
+- [x] Phase 5: Real-time Odds Scraping
+
+## Supported Bet Types
+
+| Type | Japanese | Combinations | Description |
+|------|----------|--------------|-------------|
+| Exacta | 2連単 | 30 | 1st & 2nd in order |
+| Trifecta | 3連単 | 120 | 1st, 2nd & 3rd in order |
 
 ## Strategy
 
@@ -102,6 +140,7 @@ Buy only when expected_value > 1.0
 
 ## Future Extensions
 
-- Additional bet types (trifecta, trio)
-- Target profit calculation
-- Kelly criterion bet sizing optimization
+- Quinella (unordered exacta) support
+- Web dashboard for daily predictions
+- Deep learning models (Transformer)
+- Docker containerization

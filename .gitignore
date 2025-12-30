@@ -38,8 +38,10 @@ Thumbs.db
 # Project specific
 data/raw/
 data/processed/
+data/odds/
 models/*.pkl
 models/*.joblib
+models/onnx/
 results/
 
 # Claude Code
@@ -55,3 +57,9 @@ notebooks/*.ipynb
 # Rust
 rust-api/target/
 **/*.rs.bk
+Cargo.lock
+
+# Environment
+.env
+.env.local
+*.local

@@ -22,7 +22,8 @@ boatrace-ai/
 │   ├── raw/                     # Raw data (LZH -> TXT files)
 │   │   ├── results/             # Race results (rankings, times)
 │   │   └── programs/            # Race programs (entries, racer info)
-│   └── processed/               # Processed CSV files
+│   ├── processed/               # Processed CSV files
+│   └── odds/                    # Scraped real-time odds (JSON)
 ├── models/                      # Saved model files
 │   ├── boatrace_model.pkl       # LightGBM model (Python)
 │   └── onnx/                    # ONNX models (for Rust API)
@@ -32,7 +33,9 @@ boatrace-ai/
 ├── src/
 │   ├── data_collection/
 │   │   ├── downloader.py        # Download LZH files from official site
-│   │   └── extractor.py         # Extract LZH -> TXT
+│   │   ├── extractor.py         # Extract LZH -> TXT
+│   │   ├── odds_scraper.py      # Real-time odds scraper (exacta/trifecta)
+│   │   └── collect_daily.py     # Daily odds collection orchestrator
 │   ├── preprocessing/
 │   │   └── parser.py            # Parse TXT -> CSV (programs & results)
 │   ├── models/
@@ -153,6 +156,33 @@ uv run python -m src.backtesting.simulator --all-data
 
 # Use synthetic odds (avoids data leakage from real payouts)
 uv run python -m src.backtesting.simulator --synthetic-odds
+
+# Use real scraped odds (JSON) with fallback to payout CSV
+uv run python -m src.backtesting.simulator --use-real-odds
+```
+
+### Phase 5: Odds Collection
+```bash
+# Scrape single race exacta odds
+uv run python -m src.data_collection.odds_scraper -d 20251230 -s 23 -r 1
+
+# Scrape single race trifecta odds
+uv run python -m src.data_collection.odds_scraper -d 20251230 -s 23 -r 1 --trifecta
+
+# Scrape all races at a stadium
+uv run python -m src.data_collection.odds_scraper -d 20251230 -s 23
+
+# Daily collection: all 24 stadiums × 12 races
+uv run python -m src.data_collection.collect_daily --date 20251230
+
+# Collect trifecta odds for all stadiums
+uv run python -m src.data_collection.collect_daily --date 20251230 --trifecta
+
+# Collect specific stadiums only
+uv run python -m src.data_collection.collect_daily --stadiums 23 24
+
+# List all stadium codes
+uv run python -m src.data_collection.odds_scraper --list-stadiums
 ```
 
 ### CLI Tool
@@ -258,10 +288,12 @@ real-time odds scraping from boatrace.jp is required.
 
 ## Future Plans
 
-### Phase 5: Real-time Odds Scraping (HIGH PRIORITY)
-- [ ] Scrape live odds from boatrace.jp during race day
-- [ ] Build historical odds database for better backtesting
-- [ ] Alternative: Team-Nave API subscription (¥3,300/month)
+### Phase 5: Real-time Odds Scraping ✅ COMPLETE
+- [x] Scrape exacta (2連単) odds from boatrace.jp
+- [x] Scrape trifecta (3連単) odds from boatrace.jp
+- [x] Daily collection script for all 24 stadiums
+- [x] Integrate real odds with backtester (--use-real-odds flag)
+- [x] JSON storage with date/stadium/race indexing
 
 ### Phase 6: Production Deployment
 - [ ] Docker containerization for Rust API
