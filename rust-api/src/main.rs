@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
+mod error;
 mod handlers;
 mod models;
 mod predictor;

@@ -1,22 +1,18 @@
-use actix_web::{web, HttpResponse, Responder};
+use actix_web::{web, HttpResponse};
 use std::sync::Arc;
 use tracing::warn;
 
-use crate::models::{ErrorResponse, ExactaPrediction, PredictRequest, PredictResponse};
+use crate::error::{validate_entries_count, AppError};
+use crate::models::{ExactaPrediction, PredictRequest, PredictResponse};
 use crate::AppState;
 
 /// Predict race outcome
 pub async fn predict_race(
     state: web::Data<Arc<AppState>>,
     req: web::Json<PredictRequest>,
-) -> impl Responder {
+) -> Result<HttpResponse, AppError> {
     // Validate request
-    if req.entries.len() != 6 {
-        return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "invalid_request".to_string(),
-            message: "Exactly 6 racer entries required".to_string(),
-        });
-    }
+    validate_entries_count(req.entries.len())?;
 
     // Get predictions using ONNX model, falling back on error
     let (position_probs, mut exacta_predictions) = if let Some(ref predictor_mutex) = state.predictor {
@@ -69,20 +65,15 @@ pub async fn predict_race(
         value_bets,
     };
 
-    HttpResponse::Ok().json(response)
+    Ok(HttpResponse::Ok().json(response))
 }
 
 /// Predict exacta probabilities only
 pub async fn predict_exacta(
     state: web::Data<Arc<AppState>>,
     req: web::Json<PredictRequest>,
-) -> impl Responder {
-    if req.entries.len() != 6 {
-        return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "invalid_request".to_string(),
-            message: "Exactly 6 racer entries required".to_string(),
-        });
-    }
+) -> Result<HttpResponse, AppError> {
+    validate_entries_count(req.entries.len())?;
 
     // Get predictions using ONNX model, falling back on error
     let (position_probs, mut exacta_predictions) = if let Some(ref predictor_mutex) = state.predictor {
@@ -123,5 +114,5 @@ pub async fn predict_exacta(
     // Return only top 10 by probability
     exacta_predictions.truncate(10);
 
-    HttpResponse::Ok().json(exacta_predictions)
+    Ok(HttpResponse::Ok().json(exacta_predictions))
 }

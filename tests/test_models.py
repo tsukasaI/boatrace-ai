@@ -15,7 +15,78 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.models.features import FeatureEngineering, get_feature_columns
 from src.models.dataset import DatasetBuilder
-from src.models.predictor import RacePredictor, ExactaBet, format_prediction_result
+from src.models.predictor import (
+    RacePredictor,
+    ExactaBet,
+    TrifectaBet,
+    format_prediction_result,
+    validate_position_probs,
+    validate_boat_number,
+)
+from src.exceptions import ValidationError
+
+
+class TestValidation:
+    """Tests for validation functions"""
+
+    def test_validate_position_probs_valid(self, sample_position_probs):
+        """Test validation with valid input"""
+        # Should not raise
+        validate_position_probs(sample_position_probs)
+
+    def test_validate_position_probs_none(self):
+        """Test validation with None"""
+        with pytest.raises(ValidationError, match="cannot be None"):
+            validate_position_probs(None)
+
+    def test_validate_position_probs_wrong_type(self):
+        """Test validation with wrong type"""
+        with pytest.raises(ValidationError, match="must be numpy array"):
+            validate_position_probs([[0.1] * 6] * 6)
+
+    def test_validate_position_probs_wrong_shape(self):
+        """Test validation with wrong shape"""
+        with pytest.raises(ValidationError, match="must have shape"):
+            validate_position_probs(np.array([[0.1, 0.2], [0.3, 0.4]]))
+
+    def test_validate_position_probs_negative(self):
+        """Test validation with negative probability"""
+        probs = np.ones((6, 6)) * 0.1
+        probs[0, 0] = -0.1
+        with pytest.raises(ValidationError, match="between 0 and 1"):
+            validate_position_probs(probs)
+
+    def test_validate_position_probs_greater_than_one(self):
+        """Test validation with probability > 1"""
+        probs = np.ones((6, 6)) * 0.1
+        probs[0, 0] = 1.5
+        with pytest.raises(ValidationError, match="between 0 and 1"):
+            validate_position_probs(probs)
+
+    def test_validate_boat_number_valid(self):
+        """Test validation with valid boat numbers"""
+        for i in range(1, 7):
+            validate_boat_number(i)  # Should not raise
+
+    def test_validate_boat_number_zero(self):
+        """Test validation with zero"""
+        with pytest.raises(ValidationError, match="between 1 and 6"):
+            validate_boat_number(0)
+
+    def test_validate_boat_number_seven(self):
+        """Test validation with 7"""
+        with pytest.raises(ValidationError, match="between 1 and 6"):
+            validate_boat_number(7)
+
+    def test_validate_boat_number_wrong_type(self):
+        """Test validation with wrong type"""
+        with pytest.raises(ValidationError, match="must be an integer"):
+            validate_boat_number(1.5)
+
+    def test_validate_boat_number_custom_name(self):
+        """Test validation with custom parameter name"""
+        with pytest.raises(ValidationError, match="first_place"):
+            validate_boat_number(0, name="first_place")
 
 
 class TestFeatureEngineering:
@@ -250,6 +321,88 @@ class TestRacePredictor:
 
         # Lower threshold should return more or equal bets
         assert len(value_bets_05) >= len(value_bets_15)
+
+    def test_calculate_trifecta_probabilities(self, sample_position_probs):
+        """Test trifecta probability calculation"""
+        predictor = RacePredictor(model=None)
+        trifecta_bets = predictor.calculate_trifecta_probabilities(sample_position_probs)
+
+        # Should have 120 combinations (6 * 5 * 4)
+        assert len(trifecta_bets) == 120
+
+        # All bets should have probability > 0
+        for bet in trifecta_bets:
+            assert bet.probability > 0
+            assert 1 <= bet.first <= 6
+            assert 1 <= bet.second <= 6
+            assert 1 <= bet.third <= 6
+            assert bet.first != bet.second
+            assert bet.first != bet.third
+            assert bet.second != bet.third
+
+        # Bets should be sorted by probability descending
+        probs = [bet.probability for bet in trifecta_bets]
+        assert probs == sorted(probs, reverse=True)
+
+    def test_calculate_trifecta_expected_values(self, sample_position_probs):
+        """Test trifecta expected value calculation"""
+        predictor = RacePredictor(model=None)
+        trifecta_bets = predictor.calculate_trifecta_probabilities(sample_position_probs)
+
+        trifecta_odds = {
+            (1, 2, 3): 10.0,
+            (1, 3, 2): 15.0,
+            (4, 3, 1): 60.8,  # From sample payout data
+        }
+        bets_with_ev = predictor.calculate_trifecta_expected_values(trifecta_bets, trifecta_odds)
+
+        # Check that odds and EV are set for known combinations
+        for bet in bets_with_ev:
+            key = (bet.first, bet.second, bet.third)
+            if key in trifecta_odds:
+                assert bet.odds == trifecta_odds[key]
+                assert bet.expected_value == bet.probability * bet.odds
+
+    def test_get_trifecta_value_bets(self, sample_position_probs):
+        """Test filtering trifecta value bets"""
+        predictor = RacePredictor(model=None)
+        trifecta_bets = predictor.calculate_trifecta_probabilities(sample_position_probs)
+
+        # Create high odds for some combinations to get value bets
+        trifecta_odds = {(1, 2, 3): 50.0}
+        bets_with_ev = predictor.calculate_trifecta_expected_values(trifecta_bets, trifecta_odds)
+
+        value_bets = predictor.get_trifecta_value_bets(bets_with_ev, threshold=1.0)
+
+        for bet in value_bets:
+            assert bet.expected_value > 1.0
+
+
+class TestTrifectaBet:
+    """Tests for TrifectaBet dataclass"""
+
+    def test_default_values(self):
+        """Test default value initialization"""
+        bet = TrifectaBet(first=1, second=2, third=3, probability=0.05)
+
+        assert bet.first == 1
+        assert bet.second == 2
+        assert bet.third == 3
+        assert bet.probability == 0.05
+        assert bet.odds == 0.0
+        assert bet.expected_value == 0.0
+
+    def test_with_odds_and_ev(self):
+        """Test initialization with odds and expected value"""
+        bet = TrifectaBet(
+            first=1, second=2, third=3,
+            probability=0.05,
+            odds=30.0,
+            expected_value=1.5
+        )
+
+        assert bet.odds == 30.0
+        assert bet.expected_value == 1.5
 
 
 class TestExactaBet:
