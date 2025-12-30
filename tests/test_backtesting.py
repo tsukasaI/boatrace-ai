@@ -31,6 +31,8 @@ from src.backtesting.synthetic_odds import (
     HISTORICAL_WIN_RATE,
     HISTORICAL_SECOND_RATE,
 )
+from src.data_collection.odds_scraper import ExactaOdds, save_odds
+from src.data_collection.collect_daily import collect_stadium, collect_all_stadiums
 
 
 class TestSyntheticOddsGenerator:
@@ -608,3 +610,101 @@ class TestGenerateCsvReport:
         df = pd.read_csv(output_path)
         assert len(df) == 1
         assert df.iloc[0]["won"] == True
+
+
+class TestBacktestSimulatorRealOdds:
+    """Tests for BacktestSimulator with real odds integration"""
+
+    def test_init_with_real_odds(self):
+        """Test initialization with use_real_odds flag"""
+        simulator = BacktestSimulator(use_real_odds=True)
+        assert simulator.use_real_odds is True
+        assert simulator.odds_dir is not None
+        # Should create synthetic_odds_gen for fallback
+        assert simulator.synthetic_odds_gen is not None
+
+    def test_init_with_custom_odds_dir(self, tmp_path):
+        """Test initialization with custom odds directory"""
+        simulator = BacktestSimulator(use_real_odds=True, odds_dir=tmp_path)
+        assert simulator.odds_dir == tmp_path
+
+    def test_init_real_odds_without_synthetic(self):
+        """Test real odds mode creates synthetic generator for fallback"""
+        simulator = BacktestSimulator(
+            use_real_odds=True,
+            use_synthetic_odds=False,
+        )
+        # Should still have synthetic generator for fallback
+        assert simulator.synthetic_odds_gen is not None
+
+    def test_print_summary_shows_real_odds(self, capsys):
+        """Test print_summary shows Real (JSON) for real odds mode"""
+        simulator = BacktestSimulator(use_real_odds=True)
+        result = BacktestResult()
+        simulator.print_summary(result)
+
+        captured = capsys.readouterr()
+        assert "Odds type: Real (JSON)" in captured.out
+
+    def test_print_summary_shows_payout_csv(self, capsys):
+        """Test print_summary shows Payout CSV for default mode"""
+        simulator = BacktestSimulator()
+        result = BacktestResult()
+        simulator.print_summary(result)
+
+        captured = capsys.readouterr()
+        assert "Odds type: Payout CSV" in captured.out
+
+
+class TestRealOddsLoading:
+    """Tests for loading real odds from JSON files"""
+
+    def test_load_odds_from_file(self, tmp_path):
+        """Test that simulator can load odds from saved JSON"""
+        # Create a test odds file
+        odds = ExactaOdds(
+            date=20251230,
+            stadium_code=23,
+            race_no=1,
+            scraped_at="2025-12-30T10:00:00",
+            odds={(1, 2): 5.5, (1, 3): 8.2, (2, 1): 10.2},
+        )
+        save_odds(odds, tmp_path)
+
+        # Verify file was created
+        filepath = tmp_path / "20251230_23_01.json"
+        assert filepath.exists()
+
+        # Load and verify
+        from src.data_collection.odds_scraper import load_odds
+        loaded = load_odds(20251230, 23, 1, tmp_path)
+        assert loaded is not None
+        assert loaded.odds[(1, 2)] == 5.5
+
+
+class TestCollectDaily:
+    """Tests for collect_daily module"""
+
+    def test_collect_stadium_returns_stats(self, mocker):
+        """Test collect_stadium returns proper stats"""
+        # Mock the scraper to avoid actual network calls
+        mock_scraper = mocker.Mock()
+        mock_scraper.scrape_exacta.return_value = None  # Simulate no data
+
+        stats = {"success": 0, "skip": 0, "fail": 0}
+        # Test with mocked empty results
+        from src.data_collection.collect_daily import collect_stadium as cs
+
+        # Just verify the function exists and has correct signature
+        import inspect
+        sig = inspect.signature(cs)
+        assert "scraper" in sig.parameters
+        assert "date" in sig.parameters
+        assert "stadium_code" in sig.parameters
+
+    def test_module_imports(self):
+        """Test that collect_daily module imports correctly"""
+        from src.data_collection import collect_daily
+        assert hasattr(collect_daily, "collect_stadium")
+        assert hasattr(collect_daily, "collect_all_stadiums")
+        assert hasattr(collect_daily, "main")

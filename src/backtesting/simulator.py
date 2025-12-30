@@ -22,6 +22,10 @@ from src.models.predictor import RacePredictor, ExactaBet
 from src.models.features import FeatureEngineering, get_feature_columns
 from src.backtesting.metrics import calculate_metrics, BacktestMetrics
 from src.backtesting.synthetic_odds import SyntheticOddsGenerator
+from src.data_collection.odds_scraper import load_odds as load_scraped_odds
+
+# Default odds directory
+ODDS_DIR = PROJECT_ROOT / "data" / "odds"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,6 +83,8 @@ class BacktestSimulator:
         stake: int = 100,
         max_bets_per_race: int = 3,
         use_synthetic_odds: bool = False,
+        use_real_odds: bool = False,
+        odds_dir: Path = None,
     ):
         """
         Args:
@@ -87,6 +93,8 @@ class BacktestSimulator:
             stake: Stake amount per bet (yen)
             max_bets_per_race: Maximum number of bets per race
             use_synthetic_odds: Whether to use synthetic odds
+            use_real_odds: Whether to use scraped real odds from JSON
+            odds_dir: Directory containing scraped odds JSON files
         """
         self.predictor = RacePredictor(model)
         self.ev_threshold = ev_threshold
@@ -94,7 +102,9 @@ class BacktestSimulator:
         self.max_bets_per_race = max_bets_per_race
         self.feature_eng = FeatureEngineering()
         self.use_synthetic_odds = use_synthetic_odds
-        self.synthetic_odds_gen = SyntheticOddsGenerator() if use_synthetic_odds else None
+        self.use_real_odds = use_real_odds
+        self.odds_dir = odds_dir or ODDS_DIR
+        self.synthetic_odds_gen = SyntheticOddsGenerator() if use_synthetic_odds or use_real_odds else None
 
     def load_data(
         self,
@@ -179,59 +189,53 @@ class BacktestSimulator:
             actual_first = int(first_place["boat_no"].values[0])
             actual_second = int(second_place["boat_no"].values[0])
 
-            # Get odds
-            if self.use_synthetic_odds:
-                # Generate features first to get model predictions
-                features = self.feature_eng.create_base_features(race_df)
-                features = self.feature_eng.create_relative_features(features)
-                available_cols = [c for c in base_cols if c in features.columns]
-                X = features[available_cols].values
-                X = np.nan_to_num(X, nan=0.0)
+            # Generate features (needed for all paths)
+            features = self.feature_eng.create_base_features(race_df)
+            features = self.feature_eng.create_relative_features(features)
+            available_cols = [c for c in base_cols if c in features.columns]
+            X = features[available_cols].values
+            X = np.nan_to_num(X, nan=0.0)
 
-                try:
-                    position_probs = self.predictor.predict_positions(X)
-                    exacta_probs_for_odds = self.predictor.calculate_exacta_probabilities(position_probs)
-                    exacta_dict = {(b.first, b.second): b.probability for b in exacta_probs_for_odds}
-                    # Generate odds with market noise (correlation=0.7 means semi-efficient market)
-                    odds = self.synthetic_odds_gen.generate_correlated_odds(exacta_dict, correlation=0.7)
-                except Exception:
-                    # Fallback to course-based odds
-                    odds = self.synthetic_odds_gen.get_all_odds()
-                # Already have features and position_probs from synthetic odds generation
-                pass
-            else:
-                # Use real odds (from payout data)
+            # Get odds with fallback chain
+            odds = None
+
+            # Priority 1: Real odds from scraped JSON files
+            if self.use_real_odds:
+                scraped = load_scraped_odds(date, stadium, race_no, self.odds_dir)
+                if scraped:
+                    odds = scraped.odds
+
+            # Priority 2: Payout CSV (unless synthetic-only mode)
+            if odds is None and not self.use_synthetic_odds:
                 race_payouts = payouts_df[
                     (payouts_df["date"] == date) &
                     (payouts_df["stadium_code"] == stadium) &
                     (payouts_df["race_no"] == race_no) &
                     (payouts_df["bet_type"] == "exacta")
                 ]
-                if len(race_payouts) == 0:
-                    continue
+                if len(race_payouts) > 0:
+                    odds = {}
+                    for _, row in race_payouts.iterrows():
+                        odds[(int(row["first"]), int(row["second"]))] = row["odds"]
 
-                # Create odds dictionary
-                odds = {}
-                for _, row in race_payouts.iterrows():
-                    odds[(int(row["first"]), int(row["second"]))] = row["odds"]
-
-                # Generate features
-                features = self.feature_eng.create_base_features(race_df)
-                features = self.feature_eng.create_relative_features(features)
-
-                # Extract only available features
-                available_cols = [c for c in base_cols if c in features.columns]
-                X = features[available_cols].values
-
-                # Fill missing values with zeros
-                X = np.nan_to_num(X, nan=0.0)
-
-                # Predict
+            # Priority 3: Synthetic odds (fallback or explicit)
+            if odds is None:
+                if self.synthetic_odds_gen is None:
+                    continue  # No odds source available, skip race
                 try:
                     position_probs = self.predictor.predict_positions(X)
-                except Exception as e:
-                    logger.debug(f"Prediction error: {e}")
-                    continue
+                    exacta_probs_for_odds = self.predictor.calculate_exacta_probabilities(position_probs)
+                    exacta_dict = {(b.first, b.second): b.probability for b in exacta_probs_for_odds}
+                    odds = self.synthetic_odds_gen.generate_correlated_odds(exacta_dict, correlation=0.7)
+                except Exception:
+                    odds = self.synthetic_odds_gen.get_all_odds()
+
+            # Predict position probabilities
+            try:
+                position_probs = self.predictor.predict_positions(X)
+            except Exception as e:
+                logger.debug(f"Prediction error: {e}")
+                continue
 
             # Calculate exacta probabilities
             exacta_bets = self.predictor.calculate_exacta_probabilities(position_probs)
@@ -288,7 +292,8 @@ class BacktestSimulator:
         print(f"EV Threshold: {self.ev_threshold}")
         print(f"Stake per bet: ¥{self.stake}")
         print(f"Max bets per race: {self.max_bets_per_race}")
-        print(f"Odds type: {'Synthetic' if self.use_synthetic_odds else 'Real'}")
+        odds_type = "Real (JSON)" if self.use_real_odds else ("Synthetic" if self.use_synthetic_odds else "Payout CSV")
+        print(f"Odds type: {odds_type}")
         print("-" * 60)
         print(f"Total races: {result.total_races}")
         print(f"Races with bets: {result.races_with_bets}")
@@ -333,6 +338,14 @@ def main():
         "--synthetic-odds", action="store_true",
         help="Use synthetic odds based on historical rates"
     )
+    parser.add_argument(
+        "--use-real-odds", action="store_true",
+        help="Use scraped real odds from JSON files (with fallback)"
+    )
+    parser.add_argument(
+        "--odds-dir", type=Path,
+        help="Directory containing scraped odds JSON files"
+    )
     args = parser.parse_args()
 
     # Load model
@@ -352,9 +365,13 @@ def main():
         stake=args.stake,
         max_bets_per_race=args.max_bets,
         use_synthetic_odds=args.synthetic_odds,
+        use_real_odds=args.use_real_odds,
+        odds_dir=args.odds_dir,
     )
 
-    if args.synthetic_odds:
+    if args.use_real_odds:
+        logger.info(f"Using real odds from JSON files (dir: {simulator.odds_dir})")
+    elif args.synthetic_odds:
         logger.info("Using synthetic odds based on historical rates")
 
     # Load data
