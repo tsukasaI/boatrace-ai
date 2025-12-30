@@ -201,6 +201,81 @@ impl RaceData {
     }
 }
 
+/// Race key for indexing: (date, stadium_code, race_no)
+pub type RaceKey = (u32, u8, u8);
+
+/// Indexed race data with O(1) lookups
+///
+/// Pre-loads all data into memory and indexes by (date, stadium_code, race_no)
+/// for fast backtest iteration.
+pub struct IndexedRaceData {
+    /// All entries indexed by race key
+    races: HashMap<RaceKey, Vec<ProgramEntry>>,
+    /// All dates in sorted order
+    dates: Vec<u32>,
+}
+
+impl IndexedRaceData {
+    /// Load and index all race data from CSV
+    pub fn load<P: AsRef<Path>>(csv_path: P) -> Result<Self, PolarsError> {
+        let df = CsvReadOptions::default()
+            .try_into_reader_with_file_path(Some(csv_path.as_ref().to_path_buf()))?
+            .finish()?;
+
+        let entries = RaceData::dataframe_to_entries(&df)?;
+
+        // Build index
+        let mut races: HashMap<RaceKey, Vec<ProgramEntry>> = HashMap::new();
+        let mut date_set = std::collections::BTreeSet::new();
+
+        for entry in entries {
+            date_set.insert(entry.date);
+            races
+                .entry((entry.date, entry.stadium_code, entry.race_no))
+                .or_default()
+                .push(entry);
+        }
+
+        let dates: Vec<u32> = date_set.into_iter().collect();
+
+        Ok(Self { races, dates })
+    }
+
+    /// Get entries for a specific race - O(1)
+    pub fn get_race(&self, date: u32, stadium_code: u8, race_no: u8) -> Option<&Vec<ProgramEntry>> {
+        self.races.get(&(date, stadium_code, race_no))
+    }
+
+    /// Get all dates in sorted order
+    pub fn dates(&self) -> &[u32] {
+        &self.dates
+    }
+
+    /// Get all races for a date - O(n) where n = races on that date
+    pub fn get_races_by_date(&self, date: u32) -> HashMap<(u8, u8), &Vec<ProgramEntry>> {
+        self.races
+            .iter()
+            .filter(|((d, _, _), _)| *d == date)
+            .map(|((_, s, r), entries)| ((*s, *r), entries))
+            .collect()
+    }
+
+    /// Iterate over all races
+    pub fn iter(&self) -> impl Iterator<Item = (&RaceKey, &Vec<ProgramEntry>)> {
+        self.races.iter()
+    }
+
+    /// Total number of races
+    pub fn len(&self) -> usize {
+        self.races.len()
+    }
+
+    /// Check if empty
+    pub fn is_empty(&self) -> bool {
+        self.races.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

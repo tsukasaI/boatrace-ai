@@ -4,7 +4,7 @@
 
 use super::metrics::{calculate_metrics, BacktestMetrics};
 use crate::core::kelly::KellyCalculator;
-use crate::data::{load_exacta_odds, RaceData};
+use crate::data::{load_exacta_odds, IndexedRaceData, RaceKey};
 use crate::predictor::FallbackPredictor;
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -75,70 +75,82 @@ impl Default for BacktestResult {
     }
 }
 
-/// Race result entry (from results CSV)
-#[derive(Debug, Clone)]
-pub struct ResultEntry {
-    pub date: u32,
-    pub stadium_code: u8,
-    pub race_no: u8,
-    pub boat_no: u8,
-    pub rank: u8,
+/// Indexed results data with O(1) lookups
+///
+/// Pre-loads all results into memory and indexes by (date, stadium_code, race_no)
+pub struct IndexedResultsData {
+    /// Results indexed by race key: (1st place boat, 2nd place boat)
+    results: HashMap<RaceKey, (u8, u8)>,
 }
 
-/// Results data loader
-pub struct ResultsData {
-    df: LazyFrame,
-}
-
-impl ResultsData {
-    /// Load results data from CSV file
+impl IndexedResultsData {
+    /// Load and index all results from CSV
     pub fn load<P: AsRef<Path>>(csv_path: P) -> Result<Self, PolarsError> {
-        let df = LazyCsvReader::new(csv_path).finish()?;
-        Ok(Self { df })
-    }
+        let df = CsvReadOptions::default()
+            .try_into_reader_with_file_path(Some(csv_path.as_ref().to_path_buf()))?
+            .finish()?;
 
-    /// Get race result (1st and 2nd place boats)
-    pub fn get_race_result(
-        &self,
-        date: u32,
-        stadium_code: u8,
-        race_no: u8,
-    ) -> Result<Option<(u8, u8)>, PolarsError> {
-        let filtered = self
-            .df
-            .clone()
-            .filter(
-                col("date")
-                    .eq(lit(date as i64))
-                    .and(col("stadium_code").eq(lit(stadium_code as i64)))
-                    .and(col("race_no").eq(lit(race_no as i64))),
-            )
-            .collect()?;
+        let date_col = df.column("date")?.i64()?;
+        let stadium_col = df.column("stadium_code")?.i64()?;
+        let race_col = df.column("race_no")?.i64()?;
+        let boat_col = df.column("boat_no")?.i64()?;
+        let rank_col = df.column("rank")?.i64()?;
 
-        if filtered.height() != 6 {
-            return Ok(None);
-        }
+        // First pass: collect all entries by race
+        let mut race_entries: HashMap<RaceKey, Vec<(u8, u8)>> = HashMap::new();
 
-        let rank_col = filtered.column("rank")?.i64()?;
-        let boat_col = filtered.column("boat_no")?.i64()?;
-
-        let mut first: Option<u8> = None;
-        let mut second: Option<u8> = None;
-
-        for i in 0..filtered.height() {
-            if let (Some(rank), Some(boat)) = (rank_col.get(i), boat_col.get(i)) {
-                if rank == 1 {
-                    first = Some(boat as u8);
-                } else if rank == 2 {
-                    second = Some(boat as u8);
-                }
+        for i in 0..df.height() {
+            if let (Some(date), Some(stadium), Some(race), Some(boat), Some(rank)) = (
+                date_col.get(i),
+                stadium_col.get(i),
+                race_col.get(i),
+                boat_col.get(i),
+                rank_col.get(i),
+            ) {
+                let key = (date as u32, stadium as u8, race as u8);
+                race_entries
+                    .entry(key)
+                    .or_default()
+                    .push((boat as u8, rank as u8));
             }
         }
 
-        match (first, second) {
-            (Some(f), Some(s)) => Ok(Some((f, s))),
-            _ => Ok(None),
+        // Second pass: extract 1st and 2nd place for each race
+        let mut results: HashMap<RaceKey, (u8, u8)> = HashMap::new();
+
+        for (key, entries) in race_entries {
+            let mut first: Option<u8> = None;
+            let mut second: Option<u8> = None;
+
+            for (boat, rank) in entries {
+                if rank == 1 {
+                    first = Some(boat);
+                } else if rank == 2 {
+                    second = Some(boat);
+                }
+            }
+
+            if let (Some(f), Some(s)) = (first, second) {
+                results.insert(key, (f, s));
+            }
         }
+
+        Ok(Self { results })
+    }
+
+    /// Get race result (1st and 2nd place boats) - O(1)
+    pub fn get_race_result(&self, date: u32, stadium_code: u8, race_no: u8) -> Option<(u8, u8)> {
+        self.results.get(&(date, stadium_code, race_no)).copied()
+    }
+
+    /// Total number of races with results
+    pub fn len(&self) -> usize {
+        self.results.len()
+    }
+
+    /// Check if empty
+    pub fn is_empty(&self) -> bool {
+        self.results.is_empty()
     }
 }
 
@@ -196,116 +208,117 @@ impl BacktestSimulator {
     }
 
     /// Run backtest on historical data
+    ///
+    /// Uses pre-indexed data structures for O(1) lookups instead of O(n) filtering.
     pub fn run<P: AsRef<Path>>(
         &self,
         programs_path: P,
         results_path: P,
         odds_dir: Option<&Path>,
     ) -> Result<BacktestResult, PolarsError> {
-        let race_data = RaceData::load(&programs_path)?;
-        let results_data = ResultsData::load(&results_path)?;
+        // Load and index all data upfront
+        eprintln!("Loading program data...");
+        let race_data = IndexedRaceData::load(&programs_path)?;
+        eprintln!("Loaded {} races from programs", race_data.len());
 
-        let dates = race_data.list_dates()?;
+        eprintln!("Loading results data...");
+        let results_data = IndexedResultsData::load(&results_path)?;
+        eprintln!("Loaded {} races from results", results_data.len());
 
         let mut result = BacktestResult::new();
 
-        for date in dates {
+        // Iterate directly over all races (already indexed)
+        for ((date, stadium_code, race_no), entries) in race_data.iter() {
             // Apply test start date filter
             if let Some(start) = self.config.test_start_date {
-                if date < start {
+                if *date < start {
                     continue;
                 }
             }
 
-            // Get all races for this date
-            let races = race_data.get_races_by_date(date)?;
+            if entries.len() != 6 {
+                continue;
+            }
 
-            for ((stadium_code, race_no), entries) in races {
-                if entries.len() != 6 {
-                    continue;
-                }
+            result.total_races += 1;
 
-                result.total_races += 1;
-
-                // Get actual result
-                let actual_result = results_data.get_race_result(date, stadium_code, race_no)?;
-                let (actual_first, actual_second) = match actual_result {
+            // Get actual result - O(1) lookup
+            let (actual_first, actual_second) =
+                match results_data.get_race_result(*date, *stadium_code, *race_no) {
                     Some(r) => r,
                     None => continue,
                 };
 
-                // Load odds if available
-                let odds: Option<HashMap<(u8, u8), f64>> =
-                    odds_dir.and_then(|dir| load_exacta_odds(dir, date, stadium_code, race_no));
+            // Load odds if available
+            let odds: Option<HashMap<(u8, u8), f64>> =
+                odds_dir.and_then(|dir| load_exacta_odds(dir, *date, *stadium_code, *race_no));
 
-                // Skip if no odds (for now, require odds)
-                let odds = match odds {
-                    Some(o) => o,
-                    None => continue,
+            // Skip if no odds (for now, require odds)
+            let odds = match odds {
+                Some(o) => o,
+                None => continue,
+            };
+
+            // Run prediction
+            let racer_entries: Vec<_> = entries.iter().map(|e| e.to_racer_entry()).collect();
+            let position_probs = self.predictor.predict_positions(&racer_entries);
+            let exacta_probs = self.predictor.calculate_exacta_probs(&position_probs);
+
+            // Calculate expected values and filter
+            let mut value_bets: Vec<_> = exacta_probs
+                .iter()
+                .filter_map(|pred| {
+                    let key = (pred.first, pred.second);
+                    odds.get(&key).map(|&o| {
+                        let ev = pred.probability * o;
+                        (pred.first, pred.second, pred.probability, o, ev)
+                    })
+                })
+                .filter(|(_, _, _, _, ev)| *ev > self.config.ev_threshold)
+                .collect();
+
+            if value_bets.is_empty() {
+                continue;
+            }
+
+            // Sort by EV descending
+            value_bets.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
+
+            // Limit to max bets per race
+            value_bets.truncate(self.config.max_bets_per_race);
+
+            result.races_with_bets += 1;
+
+            // Execute bets
+            for (first, second, probability, bet_odds, ev) in value_bets {
+                let stake = self.calculate_stake(probability, bet_odds);
+                let won = first == actual_first && second == actual_second;
+                let payout = if won {
+                    (bet_odds * stake as f64) as i64
+                } else {
+                    0
+                };
+                let profit = payout - stake;
+
+                let record = BetRecord {
+                    date: *date,
+                    stadium_code: *stadium_code,
+                    race_no: *race_no,
+                    first,
+                    second,
+                    probability,
+                    odds: bet_odds,
+                    expected_value: ev,
+                    stake,
+                    actual_first,
+                    actual_second,
+                    won,
+                    profit,
                 };
 
-                // Run prediction
-                let racer_entries: Vec<_> = entries.iter().map(|e| e.to_racer_entry()).collect();
-                let position_probs = self.predictor.predict_positions(&racer_entries);
-                let exacta_probs = self.predictor.calculate_exacta_probs(&position_probs);
-
-                // Calculate expected values and filter
-                let mut value_bets: Vec<_> = exacta_probs
-                    .iter()
-                    .filter_map(|pred| {
-                        let key = (pred.first, pred.second);
-                        odds.get(&key).map(|&o| {
-                            let ev = pred.probability * o;
-                            (pred.first, pred.second, pred.probability, o, ev)
-                        })
-                    })
-                    .filter(|(_, _, _, _, ev)| *ev > self.config.ev_threshold)
-                    .collect();
-
-                if value_bets.is_empty() {
-                    continue;
-                }
-
-                // Sort by EV descending
-                value_bets
-                    .sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
-
-                // Limit to max bets per race
-                value_bets.truncate(self.config.max_bets_per_race);
-
-                result.races_with_bets += 1;
-
-                // Execute bets
-                for (first, second, probability, bet_odds, ev) in value_bets {
-                    let stake = self.calculate_stake(probability, bet_odds);
-                    let won = first == actual_first && second == actual_second;
-                    let payout = if won {
-                        (bet_odds * stake as f64) as i64
-                    } else {
-                        0
-                    };
-                    let profit = payout - stake;
-
-                    let record = BetRecord {
-                        date,
-                        stadium_code,
-                        race_no,
-                        first,
-                        second,
-                        probability,
-                        odds: bet_odds,
-                        expected_value: ev,
-                        stake,
-                        actual_first,
-                        actual_second,
-                        won,
-                        profit,
-                    };
-
-                    result.bets.push(record);
-                    result.total_stake += stake;
-                    result.total_payout += payout;
-                }
+                result.bets.push(record);
+                result.total_stake += stake;
+                result.total_payout += payout;
             }
         }
 

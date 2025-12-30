@@ -6,7 +6,7 @@ pub mod odds_loader;
 pub mod parser;
 
 // Re-export commonly used types
-pub use csv_loader::{ProgramEntry, RaceData};
+pub use csv_loader::{IndexedRaceData, ProgramEntry, RaceData, RaceKey};
 pub use features::{
     get_all_feature_names, get_base_feature_names, BaseFeatures, FeatureEngineering,
     HistoricalFeatures, RacerFeatures, RelativeFeatures,
