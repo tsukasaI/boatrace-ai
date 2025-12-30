@@ -21,6 +21,7 @@
 //! println!("Recommended stake: {}", sizing.stake);
 //! ```
 
+pub mod backtesting;
 pub mod core;
 pub mod data;
 pub mod models;
@@ -31,7 +32,9 @@ pub mod predictor;
 pub mod error;
 
 // Re-export commonly used types
-pub use data::{load_exacta_odds, load_trifecta_odds, ProgramEntry, RaceData};
+pub use data::{
+    load_exacta_odds, load_trifecta_odds, FeatureEngineering, ProgramEntry, RaceData, RacerFeatures,
+};
 pub use models::{
     ExactaOdds, ExactaPrediction, PositionProb, PredictRequest, PredictResponse, RacerEntry,
     TrifectaOdds, TrifectaPrediction,

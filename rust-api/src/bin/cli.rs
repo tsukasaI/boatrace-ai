@@ -7,6 +7,7 @@ use dialoguer::{theme::ColorfulTheme, Input, Select};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::{Path, PathBuf};
 
+use boatrace::backtesting::{BacktestConfig, BacktestSimulator};
 use boatrace::core::kelly::KellyCalculator;
 use boatrace::data::{load_exacta_odds, load_trifecta_odds, RaceData};
 use boatrace::predictor::FallbackPredictor;
@@ -86,9 +87,21 @@ enum Commands {
         #[arg(long, default_value = "1.0")]
         threshold: f64,
 
-        /// Use synthetic odds instead of real odds
+        /// Stake per bet in yen
+        #[arg(long, default_value = "100")]
+        stake: i64,
+
+        /// Maximum bets per race
+        #[arg(long, default_value = "3")]
+        max_bets: usize,
+
+        /// Test start date (YYYYMMDD format, default: 20240701)
         #[arg(long)]
-        synthetic_odds: bool,
+        test_start: Option<u32>,
+
+        /// Use all data (ignore test_start filter)
+        #[arg(long)]
+        all_data: bool,
     },
 }
 
@@ -130,9 +143,23 @@ fn main() -> Result<()> {
             }
             Commands::Backtest {
                 threshold,
-                synthetic_odds,
+                stake,
+                max_bets,
+                test_start,
+                all_data,
             } => {
-                run_backtest(threshold, synthetic_odds)?;
+                run_backtest(
+                    &cli.data_dir,
+                    &cli.odds_dir,
+                    threshold,
+                    stake,
+                    max_bets,
+                    if all_data {
+                        None
+                    } else {
+                        test_start.or(Some(20240701))
+                    },
+                )?;
             }
         }
     } else {
@@ -528,20 +555,97 @@ fn list_races(data_dir: &Path, date: u32) -> Result<()> {
     Ok(())
 }
 
-fn run_backtest(threshold: f64, synthetic_odds: bool) -> Result<()> {
+fn run_backtest(
+    data_dir: &Path,
+    odds_dir: &Path,
+    threshold: f64,
+    stake: i64,
+    max_bets: usize,
+    test_start: Option<u32>,
+) -> Result<()> {
     println!("{}", "Running backtest...".green());
-    println!("EV Threshold: {}", threshold);
-    println!(
-        "Synthetic odds: {}",
-        if synthetic_odds { "Yes" } else { "No" }
-    );
+
+    let config = BacktestConfig {
+        ev_threshold: threshold,
+        stake,
+        max_bets_per_race: max_bets,
+        use_kelly: false,
+        kelly_multiplier: 0.25,
+        test_start_date: test_start,
+    };
+
+    println!("EV Threshold: {:.2}", config.ev_threshold);
+    println!("Stake per bet: {}", config.stake);
+    println!("Max bets per race: {}", config.max_bets_per_race);
+    if let Some(start) = config.test_start_date {
+        println!("Test start date: {}", start);
+    } else {
+        println!("Using all data");
+    }
     println!();
 
-    // TODO: Implement backtesting (Phase 5)
-    println!(
-        "{}",
-        "Note: Backtesting requires implementation (Phase 5)".dimmed()
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .unwrap(),
     );
+    pb.set_message("Loading data and running backtest...");
+
+    let programs_path = data_dir.join("programs_entries.csv");
+    let results_path = data_dir.join("results_entries.csv");
+
+    let simulator = BacktestSimulator::new(config);
+
+    let result = simulator
+        .run(&programs_path, &results_path, Some(odds_dir))
+        .with_context(|| "Backtest failed")?;
+
+    pb.finish_and_clear();
+
+    // Print results
+    simulator.print_summary(&result);
+
+    // Additional analysis
+    if !result.bets.is_empty() {
+        println!("\n{}", "Analysis by Stadium:".yellow().bold());
+        let stadium_analysis = boatrace::backtesting::metrics::analyze_by_stadium(&result.bets);
+        println!(
+            "{:>8} {:>8} {:>8} {:>10} {:>12} {:>10}",
+            "Stadium", "Bets", "Wins", "Hit Rate", "Profit", "ROI"
+        );
+        println!("{}", "-".repeat(60));
+        for a in stadium_analysis.iter().take(10) {
+            println!(
+                "{:>8} {:>8} {:>8} {:>9.1}% {:>12} {:>9.1}%",
+                stadium_name(a.key.parse().unwrap_or(0)),
+                a.bets,
+                a.wins,
+                a.hit_rate * 100.0,
+                a.profit,
+                a.roi * 100.0
+            );
+        }
+
+        println!("\n{}", "Analysis by Odds Range:".yellow().bold());
+        let odds_analysis = boatrace::backtesting::metrics::analyze_by_odds_range(&result.bets);
+        println!(
+            "{:>12} {:>8} {:>8} {:>10} {:>12} {:>10}",
+            "Range", "Bets", "Wins", "Hit Rate", "Profit", "ROI"
+        );
+        println!("{}", "-".repeat(65));
+        for a in &odds_analysis {
+            println!(
+                "{:>12} {:>8} {:>8} {:>9.1}% {:>12} {:>9.1}%",
+                a.key,
+                a.bets,
+                a.wins,
+                a.hit_rate * 100.0,
+                a.profit,
+                a.roi * 100.0
+            );
+        }
+    }
 
     Ok(())
 }
@@ -607,7 +711,7 @@ fn run_interactive(data_dir: &Path, odds_dir: &Path) -> Result<()> {
                     .interact_text()?;
 
                 println!();
-                run_backtest(threshold, false)?;
+                run_backtest(data_dir, odds_dir, threshold, 100, 3, Some(20240701))?;
                 println!();
             }
             3 => {
