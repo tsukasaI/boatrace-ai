@@ -16,6 +16,8 @@ use boatrace::{ExactaPrediction, RacerEntry, TrifectaPrediction};
 #[cfg(feature = "scraper")]
 use boatrace::scraper::{get_stadium_name as scraper_stadium_name, OddsScraper, ScraperConfig};
 
+use boatrace::data::{flatten_payouts, PayoutParser, PayoutRecord, ProgramParser, ResultParser};
+
 /// Default data directory (relative to project root)
 const DEFAULT_DATA_DIR: &str = "data/processed";
 const DEFAULT_ODDS_DIR: &str = "data/odds";
@@ -134,6 +136,21 @@ enum Commands {
         #[arg(long)]
         list_stadiums: bool,
     },
+
+    /// Parse raw text files to CSV
+    Parse {
+        /// Input directory containing raw text files
+        #[arg(short, long)]
+        input: PathBuf,
+
+        /// Output directory for CSV files
+        #[arg(short, long)]
+        output: PathBuf,
+
+        /// Data type to parse: programs, results, or payouts
+        #[arg(short = 't', long, default_value = "programs")]
+        data_type: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -202,6 +219,13 @@ fn main() -> Result<()> {
                 list_stadiums,
             } => {
                 run_scrape(&cli.odds_dir, date, stadium, race, trifecta, delay, list_stadiums)?;
+            }
+            Commands::Parse {
+                input,
+                output,
+                data_type,
+            } => {
+                run_parse(&input, &output, &data_type)?;
             }
         }
     } else {
@@ -840,6 +864,254 @@ fn run_scrape(
             bet_type,
             odds_dir
         );
+    }
+
+    Ok(())
+}
+
+fn run_parse(input_dir: &Path, output_dir: &Path, data_type: &str) -> Result<()> {
+    println!(
+        "{}: {} -> {}",
+        "Parsing".green(),
+        input_dir.display(),
+        output_dir.display()
+    );
+    println!("Data type: {}", data_type);
+    println!();
+
+    // Create output directory
+    std::fs::create_dir_all(output_dir)
+        .with_context(|| format!("Failed to create output directory: {:?}", output_dir))?;
+
+    // Find all .txt files in the input directory (or subdirectory)
+    let search_dir = if data_type == "payouts" {
+        input_dir.join("results")
+    } else {
+        input_dir.join(data_type)
+    };
+
+    let txt_files: Vec<_> = std::fs::read_dir(&search_dir)
+        .with_context(|| format!("Failed to read directory: {:?}", search_dir))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "txt"))
+        .map(|e| e.path())
+        .collect();
+
+    if txt_files.is_empty() {
+        println!("{}", "No .txt files found in input directory".yellow());
+        return Ok(());
+    }
+
+    println!("Found {} files to process", txt_files.len());
+
+    let pb = ProgressBar::new(txt_files.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
+
+    match data_type {
+        "programs" => {
+            let parser = ProgramParser::new();
+            let mut all_races: Vec<serde_json::Value> = Vec::new();
+            let mut all_entries: Vec<serde_json::Value> = Vec::new();
+
+            for txt_path in &txt_files {
+                pb.set_message(txt_path.file_name().unwrap_or_default().to_string_lossy().to_string());
+
+                match parser.parse_file(txt_path) {
+                    Ok(races) => {
+                        for (race_info, entries) in races {
+                            all_races.push(serde_json::json!({
+                                "date": race_info.date,
+                                "stadium_code": race_info.stadium_code,
+                                "stadium_name": race_info.stadium_name,
+                                "race_no": race_info.race_no,
+                                "race_type": race_info.race_type,
+                                "distance": race_info.distance,
+                            }));
+
+                            for entry in entries {
+                                all_entries.push(serde_json::json!({
+                                    "date": race_info.date,
+                                    "stadium_code": race_info.stadium_code,
+                                    "race_no": race_info.race_no,
+                                    "boat_no": entry.boat_no,
+                                    "racer_id": entry.racer_id,
+                                    "racer_name": entry.racer_name,
+                                    "age": entry.age,
+                                    "branch": entry.branch,
+                                    "weight": entry.weight,
+                                    "racer_class": entry.racer_class,
+                                    "national_win_rate": entry.national_win_rate,
+                                    "national_in2_rate": entry.national_in2_rate,
+                                    "local_win_rate": entry.local_win_rate,
+                                    "local_in2_rate": entry.local_in2_rate,
+                                    "motor_no": entry.motor_no,
+                                    "motor_in2_rate": entry.motor_in2_rate,
+                                    "boat_no_equip": entry.boat_no_equip,
+                                    "boat_in2_rate": entry.boat_in2_rate,
+                                }));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        pb.println(format!("{} {:?}: {}", "Warning".yellow(), txt_path.file_name().unwrap_or_default(), e));
+                    }
+                }
+                pb.inc(1);
+            }
+
+            pb.finish_and_clear();
+
+            // Write races CSV
+            if !all_races.is_empty() {
+                write_json_as_csv(&all_races, &output_dir.join("programs_races.csv"))?;
+                println!("Saved {} races to programs_races.csv", all_races.len());
+            }
+
+            // Write entries CSV
+            if !all_entries.is_empty() {
+                write_json_as_csv(&all_entries, &output_dir.join("programs_entries.csv"))?;
+                println!("Saved {} entries to programs_entries.csv", all_entries.len());
+            }
+        }
+        "results" => {
+            let parser = ResultParser::new();
+            let mut all_races: Vec<serde_json::Value> = Vec::new();
+            let mut all_entries: Vec<serde_json::Value> = Vec::new();
+
+            for txt_path in &txt_files {
+                pb.set_message(txt_path.file_name().unwrap_or_default().to_string_lossy().to_string());
+
+                match parser.parse_file(txt_path) {
+                    Ok(races) => {
+                        for (race_info, results) in races {
+                            all_races.push(serde_json::json!({
+                                "date": race_info.date,
+                                "stadium_code": race_info.stadium_code,
+                                "stadium_name": race_info.stadium_name,
+                                "race_no": race_info.race_no,
+                                "race_type": race_info.race_type,
+                                "distance": race_info.distance,
+                            }));
+
+                            for result in results {
+                                all_entries.push(serde_json::json!({
+                                    "date": race_info.date,
+                                    "stadium_code": race_info.stadium_code,
+                                    "race_no": race_info.race_no,
+                                    "boat_no": result.boat_no,
+                                    "racer_id": result.racer_id,
+                                    "rank": result.rank,
+                                    "race_time": result.race_time,
+                                    "course": result.course,
+                                    "start_timing": result.start_timing,
+                                }));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        pb.println(format!("{} {:?}: {}", "Warning".yellow(), txt_path.file_name().unwrap_or_default(), e));
+                    }
+                }
+                pb.inc(1);
+            }
+
+            pb.finish_and_clear();
+
+            if !all_races.is_empty() {
+                write_json_as_csv(&all_races, &output_dir.join("results_races.csv"))?;
+                println!("Saved {} races to results_races.csv", all_races.len());
+            }
+
+            if !all_entries.is_empty() {
+                write_json_as_csv(&all_entries, &output_dir.join("results_entries.csv"))?;
+                println!("Saved {} entries to results_entries.csv", all_entries.len());
+            }
+        }
+        "payouts" => {
+            let parser = PayoutParser::new();
+            let mut all_payouts: Vec<PayoutRecord> = Vec::new();
+
+            for txt_path in &txt_files {
+                pb.set_message(txt_path.file_name().unwrap_or_default().to_string_lossy().to_string());
+
+                match parser.parse_file(txt_path) {
+                    Ok(payouts) => {
+                        for payout in payouts {
+                            all_payouts.extend(flatten_payouts(&payout));
+                        }
+                    }
+                    Err(e) => {
+                        pb.println(format!("{} {:?}: {}", "Warning".yellow(), txt_path.file_name().unwrap_or_default(), e));
+                    }
+                }
+                pb.inc(1);
+            }
+
+            pb.finish_and_clear();
+
+            if !all_payouts.is_empty() {
+                let json_values: Vec<serde_json::Value> = all_payouts
+                    .iter()
+                    .map(|p| serde_json::to_value(p).unwrap())
+                    .collect();
+                write_json_as_csv(&json_values, &output_dir.join("payouts.csv"))?;
+                println!("Saved {} payout records to payouts.csv", all_payouts.len());
+            }
+        }
+        _ => {
+            anyhow::bail!("Unknown data type: {}. Use 'programs', 'results', or 'payouts'", data_type);
+        }
+    }
+
+    Ok(())
+}
+
+/// Write JSON values as CSV file
+fn write_json_as_csv(data: &[serde_json::Value], path: &Path) -> Result<()> {
+    use std::io::Write;
+
+    if data.is_empty() {
+        return Ok(());
+    }
+
+    // Get headers from first object
+    let headers: Vec<String> = data[0]
+        .as_object()
+        .map(|obj| obj.keys().cloned().collect())
+        .unwrap_or_default();
+
+    let mut file = std::fs::File::create(path)?;
+
+    // Write header
+    writeln!(file, "{}", headers.join(","))?;
+
+    // Write rows
+    for row in data {
+        let values: Vec<String> = headers
+            .iter()
+            .map(|h| {
+                match &row[h] {
+                    serde_json::Value::String(s) => {
+                        // Escape quotes and wrap in quotes if contains comma
+                        if s.contains(',') || s.contains('"') {
+                            format!("\"{}\"", s.replace('"', "\"\""))
+                        } else {
+                            s.clone()
+                        }
+                    }
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    serde_json::Value::Null => String::new(),
+                    _ => row[h].to_string(),
+                }
+            })
+            .collect();
+        writeln!(file, "{}", values.join(","))?;
     }
 
     Ok(())
