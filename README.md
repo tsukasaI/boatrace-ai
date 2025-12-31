@@ -26,14 +26,13 @@ boatrace-ai/
 │   ├── data_collection/         # Download & extract data
 │   ├── preprocessing/           # Parse raw data
 │   └── models/                  # Train & export models
-├── rust-api/                    # Rust (all operations)
-│   └── src/
-│       ├── bin/cli.rs           # CLI binary
-│       ├── main.rs              # API server
-│       ├── predictor.rs         # ONNX inference
-│       ├── backtesting/         # Backtest simulator
-│       └── scraper/             # Odds scraping
-└── notebooks/                   # Jupyter exploration
+└── rust-api/                    # Rust (all operations)
+    └── src/
+        ├── bin/cli.rs           # CLI binary
+        ├── main.rs              # API server
+        ├── predictor.rs         # ONNX inference
+        ├── backtesting/         # Backtest simulator
+        └── scraper/             # Odds scraping
 ```
 
 ## Quick Start

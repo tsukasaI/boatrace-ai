@@ -4,11 +4,9 @@ Pytest fixtures for boatrace-ai tests
 
 import sys
 from pathlib import Path
-from datetime import date
 
 import pytest
 import pandas as pd
-import numpy as np
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -54,33 +52,6 @@ def sample_results_df():
         "course": [4, 3, 1, 6, 5, 2],
         "start_timing": [0.05, 0.07, 0.04, 0.09, 0.09, 0.13],
     })
-
-
-@pytest.fixture
-def sample_position_probs():
-    """Sample position probability predictions (6 boats × 6 positions)"""
-    # Realistic probabilities where boat 1 (lane 1) has highest win probability
-    probs = np.array([
-        [0.45, 0.20, 0.15, 0.10, 0.06, 0.04],  # Boat 1
-        [0.15, 0.25, 0.20, 0.18, 0.12, 0.10],  # Boat 2
-        [0.12, 0.18, 0.22, 0.20, 0.16, 0.12],  # Boat 3
-        [0.10, 0.15, 0.18, 0.22, 0.20, 0.15],  # Boat 4
-        [0.10, 0.12, 0.15, 0.18, 0.25, 0.20],  # Boat 5
-        [0.08, 0.10, 0.10, 0.12, 0.21, 0.39],  # Boat 6
-    ])
-    return probs
-
-
-@pytest.fixture
-def sample_odds():
-    """Sample exacta odds"""
-    return {
-        (1, 2): 3.5,
-        (1, 3): 5.2,
-        (1, 4): 8.0,
-        (4, 3): 23.1,
-        (4, 1): 15.0,
-    }
 
 
 @pytest.fixture

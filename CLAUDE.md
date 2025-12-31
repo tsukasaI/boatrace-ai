@@ -47,17 +47,16 @@ boatrace-ai/
 │       ├── train.py             # LightGBM training
 │       ├── evaluate.py          # Model evaluation
 │       └── export_onnx.py       # Export to ONNX
-├── rust-api/                    # Rust (all operations)
-│   ├── src/
-│   │   ├── main.rs              # API server
-│   │   ├── bin/cli.rs           # CLI binary
-│   │   ├── predictor.rs         # ONNX inference
-│   │   ├── core/kelly.rs        # Kelly criterion
-│   │   ├── data/                # CSV & odds loading
-│   │   ├── scraper/             # Odds scraping
-│   │   └── backtesting/         # Backtest simulator
-│   └── Cargo.toml
-└── notebooks/                   # Jupyter exploration
+└── rust-api/                    # Rust (all operations)
+    ├── src/
+    │   ├── main.rs              # API server
+    │   ├── bin/cli.rs           # CLI binary
+    │   ├── predictor.rs         # ONNX inference
+    │   ├── core/kelly.rs        # Kelly criterion
+    │   ├── data/                # CSV & odds loading
+    │   ├── scraper/             # Odds scraping
+    │   └── backtesting/         # Backtest simulator
+    └── Cargo.toml
 ```
 
 ## Quick Start
