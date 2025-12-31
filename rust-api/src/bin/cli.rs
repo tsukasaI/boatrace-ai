@@ -633,6 +633,7 @@ fn list_races(data_dir: &Path, date: u32) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_backtest(
     data_dir: &Path,
     odds_dir: &Path,

@@ -78,7 +78,7 @@ impl SyntheticOddsGenerator {
     /// # Returns
     /// Odds (payout multiplier)
     pub fn get_odds(&self, first: u8, second: u8) -> f64 {
-        if first == second || first < 1 || first > 6 || second < 1 || second > 6 {
+        if first == second || !(1..=6).contains(&first) || !(1..=6).contains(&second) {
             return 0.0;
         }
 

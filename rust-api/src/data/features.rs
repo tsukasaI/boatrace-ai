@@ -84,8 +84,8 @@ pub struct RacerFeatures {
 impl RacerFeatures {
     /// Convert features to a flat vector for model input
     ///
-    /// Returns 9 base + 5 relative = 14 features (without historical)
-    /// or 9 base + 5 relative + 9 historical = 23 features (with historical)
+    /// Order matches ONNX model: Base (9) + Historical (9) + Relative (5) = 23 features
+    /// Without historical: Base (9) + Relative (5) = 14 features
     pub fn to_vec(&self) -> Vec<f64> {
         let mut features = vec![
             // Base features (9)
@@ -98,15 +98,9 @@ impl RacerFeatures {
             self.base.class_encoded,
             self.base.motor_in2_rate,
             self.base.boat_in2_rate,
-            // Relative features (5)
-            self.relative.win_rate_rank,
-            self.relative.win_rate_diff_from_avg,
-            self.relative.motor_rate_rank,
-            self.relative.boat_rate_rank,
-            self.relative.course_advantage,
         ];
 
-        // Historical features (9) if available
+        // Historical features (9) - must come before relative to match ONNX model order
         if let Some(ref hist) = self.historical {
             features.extend([
                 hist.recent_win_rate,
@@ -120,6 +114,15 @@ impl RacerFeatures {
                 hist.course_win_rate,
             ]);
         }
+
+        // Relative features (5) - come last
+        features.extend([
+            self.relative.win_rate_rank,
+            self.relative.win_rate_diff_from_avg,
+            self.relative.motor_rate_rank,
+            self.relative.boat_rate_rank,
+            self.relative.course_advantage,
+        ]);
 
         features
     }
@@ -228,7 +231,7 @@ impl FeatureEngineering {
     }
 }
 
-/// Get feature column names for base + relative features
+/// Get feature column names for base + relative features (14 features)
 pub fn get_base_feature_names() -> Vec<&'static str> {
     vec![
         // Base features (9)
@@ -250,7 +253,8 @@ pub fn get_base_feature_names() -> Vec<&'static str> {
     ]
 }
 
-/// Get all feature column names including historical
+/// Get all feature column names including historical (23 features)
+/// Order: Base (9) + Historical (9) + Relative (5)
 pub fn get_all_feature_names() -> Vec<&'static str> {
     vec![
         // Base features (9)
@@ -263,12 +267,6 @@ pub fn get_all_feature_names() -> Vec<&'static str> {
         "class_encoded",
         "motor_in2_rate",
         "boat_in2_rate",
-        // Relative features (5)
-        "win_rate_rank",
-        "win_rate_diff_from_avg",
-        "motor_rate_rank",
-        "boat_rate_rank",
-        "course_advantage",
         // Historical features (9)
         "recent_win_rate",
         "recent_in2_rate",
@@ -279,6 +277,12 @@ pub fn get_all_feature_names() -> Vec<&'static str> {
         "local_recent_win_rate",
         "local_race_count",
         "course_win_rate",
+        // Relative features (5)
+        "win_rate_rank",
+        "win_rate_diff_from_avg",
+        "motor_rate_rank",
+        "boat_rate_rank",
+        "course_advantage",
     ]
 }
 
@@ -426,10 +430,10 @@ mod tests {
         // Without historical: 9 base + 5 relative = 14
         assert_eq!(vec.len(), 14);
 
-        // Check some values
+        // Check some values (order: base + relative)
         assert!((vec[0] - 7.0).abs() < 0.01); // national_win_rate
         assert!((vec[6] - 4.0).abs() < 0.01); // class_encoded (A1)
-        assert!((vec[9] - 1.0).abs() < 0.01); // win_rate_rank
+        assert!((vec[9] - 1.0).abs() < 0.01); // win_rate_rank (first relative feature)
     }
 
     #[test]
@@ -452,12 +456,14 @@ mod tests {
 
         let vec = features[0].to_vec();
 
-        // With historical: 9 base + 5 relative + 9 historical = 23
+        // With historical: 9 base + 9 historical + 5 relative = 23
         assert_eq!(vec.len(), 23);
 
-        // Check historical values
-        assert!((vec[14] - 0.25).abs() < 0.01); // recent_win_rate
-        assert!((vec[22] - 0.35).abs() < 0.01); // course_win_rate
+        // Check order: base (0-8), historical (9-17), relative (18-22)
+        assert!((vec[0] - 7.0).abs() < 0.01); // national_win_rate (base)
+        assert!((vec[9] - 0.25).abs() < 0.01); // recent_win_rate (first historical)
+        assert!((vec[17] - 0.35).abs() < 0.01); // course_win_rate (last historical)
+        assert!((vec[18] - 1.0).abs() < 0.01); // win_rate_rank (first relative)
     }
 
     #[test]

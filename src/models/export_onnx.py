@@ -33,7 +33,7 @@ ONNX_DIR = MODEL_DIR / "onnx"
 def export_to_onnx(
     model_path: Path = None,
     output_dir: Path = None,
-    n_features: int = 14,
+    n_features: int = None,
 ) -> list[Path]:
     """
     Export LightGBM model to ONNX
@@ -41,7 +41,7 @@ def export_to_onnx(
     Args:
         model_path: Input model path (.pkl)
         output_dir: Output directory
-        n_features: Number of features
+        n_features: Number of features (auto-detected from model if None)
 
     Returns:
         List of exported ONNX file paths
@@ -57,6 +57,15 @@ def export_to_onnx(
 
     if predictor.models is None:
         raise ValueError("No models found in predictor")
+
+    # Auto-detect feature count from model
+    if n_features is None:
+        if predictor.feature_names:
+            n_features = len(predictor.feature_names)
+            logger.info(f"Auto-detected {n_features} features from model")
+        else:
+            n_features = 14  # Fallback to default
+            logger.warning(f"Could not detect features, using default: {n_features}")
 
     # Define input type
     initial_type = [("input", FloatTensorType([None, n_features]))]
@@ -98,19 +107,32 @@ def export_to_onnx(
 
 def verify_onnx_models(
     onnx_dir: Path = None,
-    n_features: int = 14,
+    n_features: int = None,
 ) -> bool:
     """
     Verify exported ONNX models
 
     Args:
         onnx_dir: Directory containing ONNX models
-        n_features: Number of features
+        n_features: Number of features (auto-detected from metadata if None)
 
     Returns:
         Whether verification succeeded
     """
     onnx_dir = onnx_dir or ONNX_DIR
+
+    # Auto-detect feature count from metadata
+    if n_features is None:
+        import json
+        metadata_path = onnx_dir / "metadata.json"
+        if metadata_path.exists():
+            with open(metadata_path) as f:
+                metadata = json.load(f)
+            n_features = metadata.get("n_features", 14)
+            logger.info(f"Auto-detected {n_features} features from metadata")
+        else:
+            n_features = 14
+            logger.warning(f"No metadata found, using default: {n_features}")
 
     # Create test input
     test_input = np.random.randn(6, n_features).astype(np.float32)
@@ -142,7 +164,7 @@ def verify_onnx_models(
 def compare_predictions(
     model_path: Path = None,
     onnx_dir: Path = None,
-    n_features: int = 14,
+    n_features: int = None,
     n_samples: int = 100,
 ) -> dict:
     """
@@ -151,7 +173,7 @@ def compare_predictions(
     Args:
         model_path: LightGBM model path
         onnx_dir: Directory containing ONNX models
-        n_features: Number of features
+        n_features: Number of features (auto-detected from model if None)
         n_samples: Number of test samples
 
     Returns:
@@ -163,6 +185,15 @@ def compare_predictions(
     # Load LightGBM model
     predictor = BoatracePredictor()
     predictor.load(model_path)
+
+    # Auto-detect feature count from model
+    if n_features is None:
+        if predictor.feature_names:
+            n_features = len(predictor.feature_names)
+            logger.info(f"Auto-detected {n_features} features from model")
+        else:
+            n_features = 14
+            logger.warning(f"Could not detect features, using default: {n_features}")
 
     # Create test input
     test_input = np.random.randn(n_samples, n_features).astype(np.float32)
@@ -208,8 +239,8 @@ def main():
         help="Output directory (default: models/onnx)"
     )
     parser.add_argument(
-        "--features", type=int, default=14,
-        help="Number of features (default: 14)"
+        "--features", type=int, default=None,
+        help="Number of features (auto-detected from model if not specified)"
     )
     parser.add_argument(
         "--verify", action="store_true",
