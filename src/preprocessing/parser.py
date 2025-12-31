@@ -76,6 +76,7 @@ class RaceResult:
     race_time: str        # Race time
     course: int           # Starting course
     start_timing: float   # Start timing
+    exhibition_time: float = 0.0  # Exhibition time (seconds)
 
 
 @dataclass
@@ -295,19 +296,19 @@ class ResultParser:
             racer_id = int(match.group(3))
 
             # Extract values from remaining part
-            # Format: ... 54   72  6.80   4    0.05     1.49.6
+            # Format: [name] motor boat exhibition_time course ST race_time
+            # Example: ... 44   32  6.80   4    0.05     1.49.6
             remaining = line[match.end():]
 
             # Split by whitespace to get values
             parts = remaining.split()
 
-            # Search from end: race_time, ST, course, exhibition_time, exhibition_ST, exhibition_no
-            # Minimum needed: course, ST, race_time
             course = 0
             start_timing = 0.0
             race_time = ""
+            exhibition_time = 0.0
 
-            if len(parts) >= 3:
+            if len(parts) >= 4:
                 # Last value is race time (1.49.6 format)
                 race_time = parts[-1]
 
@@ -323,6 +324,12 @@ class ResultParser:
                 except ValueError:
                     pass
 
+                # Exhibition time (e.g., 6.80)
+                try:
+                    exhibition_time = float(parts[-4])
+                except ValueError:
+                    pass
+
             return RaceResult(
                 boat_no=boat_no,
                 racer_id=racer_id,
@@ -330,6 +337,7 @@ class ResultParser:
                 race_time=race_time,
                 course=course,
                 start_timing=start_timing,
+                exhibition_time=exhibition_time,
             )
         except (ValueError, IndexError) as e:
             logger.debug(f"Result parse error: {e}")

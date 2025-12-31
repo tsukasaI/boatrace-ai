@@ -69,7 +69,10 @@ class DatasetBuilder:
         merge_keys = ["date", "stadium_code", "race_no", "boat_no"]
 
         # Select required columns from results data
-        results_subset = results_df[merge_keys + ["racer_id", "rank", "course", "start_timing"]]
+        results_cols = ["racer_id", "rank", "course", "start_timing"]
+        if "exhibition_time" in results_df.columns:
+            results_cols.append("exhibition_time")
+        results_subset = results_df[merge_keys + results_cols]
 
         # Merge
         merged = programs_df.merge(

@@ -8,8 +8,8 @@ use tracing::info;
 
 /// Number of position models (one per finishing position 1-6)
 const NUM_MODELS: usize = 6;
-/// Number of features expected by the model (9 base + 9 historical + 5 relative)
-const NUM_FEATURES: usize = 23;
+/// Number of features expected by the model (9 base + 9 historical + 5 relative + 3 exhibition)
+const NUM_FEATURES: usize = 26;
 
 /// ONNX-based predictor for boat race outcomes
 pub struct Predictor {

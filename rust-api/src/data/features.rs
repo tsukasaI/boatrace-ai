@@ -57,6 +57,25 @@ pub struct RelativeFeatures {
     pub course_advantage: f64,
 }
 
+/// Exhibition time features (from pre-race exhibition)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExhibitionFeatures {
+    pub exhibition_time: f64,      // Exhibition time in seconds (e.g., 6.80)
+    pub exhibition_time_rank: f64, // Rank within race (1=fastest, 6=slowest)
+    pub exhibition_time_diff: f64, // Difference from race average
+}
+
+impl Default for ExhibitionFeatures {
+    /// Default values when exhibition time is not available
+    fn default() -> Self {
+        Self {
+            exhibition_time: 6.80,      // Average exhibition time
+            exhibition_time_rank: 3.5,  // Middle rank
+            exhibition_time_diff: 0.0,  // No difference from average
+        }
+    }
+}
+
 /// Historical features from past performance (optional)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HistoricalFeatures {
@@ -79,13 +98,14 @@ pub struct RacerFeatures {
     pub base: BaseFeatures,
     pub relative: RelativeFeatures,
     pub historical: Option<HistoricalFeatures>,
+    pub exhibition: ExhibitionFeatures,
 }
 
 impl RacerFeatures {
     /// Convert features to a flat vector for model input
     ///
-    /// Order matches ONNX model: Base (9) + Historical (9) + Relative (5) = 23 features
-    /// Without historical: Base (9) + Relative (5) = 14 features
+    /// Order matches ONNX model: Base (9) + Historical (9) + Relative (5) + Exhibition (3) = 26 features
+    /// Without historical: Base (9) + Relative (5) + Exhibition (3) = 17 features
     pub fn to_vec(&self) -> Vec<f64> {
         let mut features = vec![
             // Base features (9)
@@ -115,13 +135,20 @@ impl RacerFeatures {
             ]);
         }
 
-        // Relative features (5) - come last
+        // Relative features (5)
         features.extend([
             self.relative.win_rate_rank,
             self.relative.win_rate_diff_from_avg,
             self.relative.motor_rate_rank,
             self.relative.boat_rate_rank,
             self.relative.course_advantage,
+        ]);
+
+        // Exhibition time features (3) - come last
+        features.extend([
+            self.exhibition.exhibition_time,
+            self.exhibition.exhibition_time_rank,
+            self.exhibition.exhibition_time_diff,
         ]);
 
         features
@@ -210,28 +237,97 @@ impl FeatureEngineering {
             .collect()
     }
 
-    /// Create all features for a race (base + relative)
+    /// Create all features for a race (base + relative + default exhibition)
     pub fn create_race_features(entries: &[ProgramEntry]) -> Vec<RacerFeatures> {
+        Self::create_race_features_with_exhibition(entries, None)
+    }
+
+    /// Create all features for a race with exhibition times
+    ///
+    /// # Arguments
+    /// * `entries` - Program entries for the race
+    /// * `exhibition_times` - Optional exhibition times for each boat (indexed by boat_no - 1)
+    pub fn create_race_features_with_exhibition(
+        entries: &[ProgramEntry],
+        exhibition_times: Option<&[f64; 6]>,
+    ) -> Vec<RacerFeatures> {
         let base_features: Vec<BaseFeatures> =
             entries.iter().map(Self::create_base_features).collect();
 
         let relative_features = Self::create_relative_features(entries);
 
+        // Calculate exhibition features if times are provided
+        let exhibition_features: Vec<ExhibitionFeatures> = if let Some(times) = exhibition_times {
+            Self::create_exhibition_features(entries, times)
+        } else {
+            // Use default values for all entries
+            entries.iter().map(|_| ExhibitionFeatures::default()).collect()
+        };
+
         base_features
             .into_iter()
             .zip(relative_features)
-            .map(|(base, relative)| RacerFeatures {
+            .zip(exhibition_features)
+            .map(|((base, relative), exhibition)| RacerFeatures {
                 boat_no: base.boat_no,
                 racer_id: base.racer_id,
                 base,
                 relative,
                 historical: None,
+                exhibition,
+            })
+            .collect()
+    }
+
+    /// Create exhibition features from exhibition times
+    fn create_exhibition_features(
+        entries: &[ProgramEntry],
+        times: &[f64; 6],
+    ) -> Vec<ExhibitionFeatures> {
+        // Calculate average exhibition time
+        let valid_times: Vec<f64> = entries
+            .iter()
+            .map(|e| times[(e.boat_no - 1) as usize])
+            .filter(|&t| t > 0.0)
+            .collect();
+
+        let avg_time = if valid_times.is_empty() {
+            6.80 // Default average
+        } else {
+            valid_times.iter().sum::<f64>() / valid_times.len() as f64
+        };
+
+        // Sort entries by exhibition time for ranking (lower is better)
+        let mut time_order: Vec<(usize, f64)> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, times[(e.boat_no - 1) as usize]))
+            .collect();
+        time_order.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Create rank map (1-based, lower time = better rank)
+        let mut ranks = vec![0.0; entries.len()];
+        for (rank, (idx, _)) in time_order.iter().enumerate() {
+            ranks[*idx] = (rank + 1) as f64;
+        }
+
+        // Build exhibition features
+        entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let time = times[(e.boat_no - 1) as usize];
+                ExhibitionFeatures {
+                    exhibition_time: if time > 0.0 { time } else { 6.80 },
+                    exhibition_time_rank: ranks[i],
+                    exhibition_time_diff: if time > 0.0 { time - avg_time } else { 0.0 },
+                }
             })
             .collect()
     }
 }
 
-/// Get feature column names for base + relative features (14 features)
+/// Get feature column names for base + relative + exhibition features (17 features)
 pub fn get_base_feature_names() -> Vec<&'static str> {
     vec![
         // Base features (9)
@@ -250,11 +346,15 @@ pub fn get_base_feature_names() -> Vec<&'static str> {
         "motor_rate_rank",
         "boat_rate_rank",
         "course_advantage",
+        // Exhibition features (3)
+        "exhibition_time",
+        "exhibition_time_rank",
+        "exhibition_time_diff",
     ]
 }
 
-/// Get all feature column names including historical (23 features)
-/// Order: Base (9) + Historical (9) + Relative (5)
+/// Get all feature column names including historical (26 features)
+/// Order: Base (9) + Historical (9) + Relative (5) + Exhibition (3)
 pub fn get_all_feature_names() -> Vec<&'static str> {
     vec![
         // Base features (9)
@@ -283,6 +383,10 @@ pub fn get_all_feature_names() -> Vec<&'static str> {
         "motor_rate_rank",
         "boat_rate_rank",
         "course_advantage",
+        // Exhibition features (3)
+        "exhibition_time",
+        "exhibition_time_rank",
+        "exhibition_time_diff",
     ]
 }
 
@@ -427,13 +531,14 @@ mod tests {
 
         let vec = features[0].to_vec();
 
-        // Without historical: 9 base + 5 relative = 14
-        assert_eq!(vec.len(), 14);
+        // Without historical: 9 base + 5 relative + 3 exhibition = 17
+        assert_eq!(vec.len(), 17);
 
-        // Check some values (order: base + relative)
+        // Check some values (order: base + relative + exhibition)
         assert!((vec[0] - 7.0).abs() < 0.01); // national_win_rate
         assert!((vec[6] - 4.0).abs() < 0.01); // class_encoded (A1)
         assert!((vec[9] - 1.0).abs() < 0.01); // win_rate_rank (first relative feature)
+        assert!((vec[14] - 6.80).abs() < 0.01); // exhibition_time (default)
     }
 
     #[test]
@@ -456,23 +561,41 @@ mod tests {
 
         let vec = features[0].to_vec();
 
-        // With historical: 9 base + 9 historical + 5 relative = 23
-        assert_eq!(vec.len(), 23);
+        // With historical: 9 base + 9 historical + 5 relative + 3 exhibition = 26
+        assert_eq!(vec.len(), 26);
 
-        // Check order: base (0-8), historical (9-17), relative (18-22)
+        // Check order: base (0-8), historical (9-17), relative (18-22), exhibition (23-25)
         assert!((vec[0] - 7.0).abs() < 0.01); // national_win_rate (base)
         assert!((vec[9] - 0.25).abs() < 0.01); // recent_win_rate (first historical)
         assert!((vec[17] - 0.35).abs() < 0.01); // course_win_rate (last historical)
         assert!((vec[18] - 1.0).abs() < 0.01); // win_rate_rank (first relative)
+        assert!((vec[23] - 6.80).abs() < 0.01); // exhibition_time (default)
     }
 
     #[test]
     fn test_feature_names() {
         let base_names = get_base_feature_names();
-        assert_eq!(base_names.len(), 14); // 9 base + 5 relative
+        assert_eq!(base_names.len(), 17); // 9 base + 5 relative + 3 exhibition
 
         let all_names = get_all_feature_names();
-        assert_eq!(all_names.len(), 23); // 9 base + 5 relative + 9 historical
+        assert_eq!(all_names.len(), 26); // 9 base + 9 historical + 5 relative + 3 exhibition
+    }
+
+    #[test]
+    fn test_exhibition_features_with_times() {
+        let entries = create_test_entries();
+        let times = [6.75, 6.80, 6.85, 6.90, 6.95, 7.00];
+
+        let features =
+            FeatureEngineering::create_race_features_with_exhibition(&entries, Some(&times));
+
+        // Boat 1 has fastest time (6.75), should be rank 1
+        assert!((features[0].exhibition.exhibition_time - 6.75).abs() < 0.01);
+        assert!((features[0].exhibition.exhibition_time_rank - 1.0).abs() < 0.01);
+
+        // Boat 2 has second fastest time (6.80), should be rank 2
+        assert!((features[1].exhibition.exhibition_time - 6.80).abs() < 0.01);
+        assert!((features[1].exhibition.exhibition_time_rank - 2.0).abs() < 0.01);
     }
 
     #[test]

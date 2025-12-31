@@ -37,8 +37,8 @@ class FeatureEngineering:
         # Encode class rank
         df["class_encoded"] = df["racer_class"].map(self.CLASS_ENCODING).fillna(0)
 
-        # Base features
-        features = df[[
+        # Base feature columns
+        base_cols = [
             "date", "stadium_code", "race_no", "boat_no", "racer_id",
             # Racer features
             "national_win_rate", "national_in2_rate",
@@ -47,7 +47,13 @@ class FeatureEngineering:
             # Equipment features
             "motor_no", "motor_in2_rate",
             "boat_no_equip", "boat_in2_rate",
-        ]].copy()
+        ]
+
+        # Include exhibition_time if available (from merged results data)
+        if "exhibition_time" in df.columns:
+            base_cols.append("exhibition_time")
+
+        features = df[base_cols].copy()
 
         return features
 
@@ -185,6 +191,17 @@ class FeatureEngineering:
         course_advantage = {1: 0.55, 2: 0.14, 3: 0.12, 4: 0.10, 5: 0.06, 6: 0.03}
         df["course_advantage"] = df["boat_no"].map(course_advantage)
 
+        # Exhibition time features (if available)
+        if "exhibition_time" in df.columns:
+            # Exhibition time rank (lower is better, 1=fastest)
+            df["exhibition_time_rank"] = df.groupby(group_cols)["exhibition_time"].rank(
+                ascending=True, method="min"
+            )
+
+            # Difference from race average
+            race_avg_exhibition = df.groupby(group_cols)["exhibition_time"].transform("mean")
+            df["exhibition_time_diff"] = df["exhibition_time"] - race_avg_exhibition
+
         return df
 
     def create_all_features(
@@ -239,4 +256,8 @@ def get_feature_columns() -> list[str]:
         "win_rate_rank", "win_rate_diff_from_avg",
         "motor_rate_rank", "boat_rate_rank",
         "course_advantage",
+        # Exhibition time features
+        "exhibition_time",
+        "exhibition_time_rank",
+        "exhibition_time_diff",
     ]
