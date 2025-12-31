@@ -7,7 +7,6 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import pytest
 import requests
 
 # Add project root to path
@@ -23,7 +22,7 @@ class TestBoatraceDataDownloader:
 
     def test_init_creates_directories(self, tmp_path):
         """Test that __init__ creates results and programs directories"""
-        downloader = BoatraceDataDownloader(output_dir=tmp_path)
+        BoatraceDataDownloader(output_dir=tmp_path)
 
         assert (tmp_path / "results").exists()
         assert (tmp_path / "programs").exists()

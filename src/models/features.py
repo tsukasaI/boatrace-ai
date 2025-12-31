@@ -5,8 +5,6 @@ Generate features from racer, motor, boat statistics and past performance
 """
 
 import pandas as pd
-import numpy as np
-from typing import Optional
 
 
 class FeatureEngineering:

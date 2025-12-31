@@ -5,7 +5,6 @@ Tests for models module (features, dataset)
 import sys
 from pathlib import Path
 
-import pytest
 import numpy as np
 import pandas as pd
 

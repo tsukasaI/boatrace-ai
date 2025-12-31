@@ -5,7 +5,6 @@ Tests for preprocessing module (parser)
 import sys
 from pathlib import Path
 
-import pytest
 import pandas as pd
 
 # Add project root to path
@@ -121,9 +120,7 @@ class TestProgramParser:
 
         parser = ProgramParser(encoding="cp932")  # Will fail and fallback
         # Should not raise, should use fallback
-        races = list(parser.parse_file(file_path))
-
-        # May or may not parse correctly depending on encoding, but should not crash
+        list(parser.parse_file(file_path))  # Just verify it doesn't crash
 
 
 class TestResultParser:

@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Tuple
 
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -40,23 +39,6 @@ def calculate_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     Returns:
         Dictionary of accuracy metrics
     """
-    # Actual finishing position (1-indexed)
-    true_rank = np.argmax(y_true, axis=1) + 1
-
-    # Predicted position with highest probability
-    pred_rank = np.argmax(y_pred, axis=1) + 1
-
-    # Top-1 accuracy (correctly predict 1st place)
-    top1_accuracy = np.mean(pred_rank == 1)  # Whether prediction of 1st is actually 1st
-    # Correct approach: Whether the boat with highest predicted probability actually finished 1st
-    actual_first = y_true[:, 0] == 1
-    pred_first = np.argmax(y_pred, axis=1) == 0  # Highest probability for 1st place
-    # This is incorrect. Need to evaluate per race.
-
-    # Simple evaluation: Distribution of actual positions for boats with highest predicted probability
-    pred_top_boat = np.argmax(y_pred, axis=1)  # Index of boat with highest 1st place probability
-    # Need per-race evaluation, so here we evaluate individual samples
-
     metrics = {
         "mean_pred_prob_for_winner": 0.0,
         "mean_pred_prob_for_second": 0.0,

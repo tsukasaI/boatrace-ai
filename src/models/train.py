@@ -8,12 +8,10 @@ import sys
 import logging
 import pickle
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import lightgbm as lgb
 import optuna
-from sklearn.multioutput import MultiOutputRegressor
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import PROJECT_ROOT
