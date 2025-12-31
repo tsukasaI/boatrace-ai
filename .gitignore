@@ -40,10 +40,18 @@ data/raw/
 data/processed/
 data/odds/
 tmp/
+results/
+
+# Models (generated, can be recreated)
 models/*.pkl
 models/*.joblib
-models/onnx/
-results/
+models/*.onnx
+models/onnx/*.onnx
+models/onnx/metadata.json
+
+# Optuna
+*.db
+optuna_*.log
 
 # Claude Code
 .claude/
