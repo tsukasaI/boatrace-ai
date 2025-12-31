@@ -1,6 +1,6 @@
-//! Web scraper for boatrace.jp odds
+//! Web scraper for boatrace.jp
 //!
-//! Scrapes exacta (2連単) and trifecta (3連単) odds from the official website.
+//! Scrapes odds, race schedules, and race entries from the official website.
 //!
 //! # Example
 //!
@@ -15,16 +15,28 @@
 //!     let odds = scraper.scrape_exacta(20241230, 23, 1).await?;
 //!     println!("Found {} combinations", odds.exacta.len());
 //!
+//!     // Scrape today's schedule
+//!     let schedule = scraper.scrape_schedule(20251231).await?;
+//!     println!("Found {} active stadiums", schedule.stadiums.len());
+//!
+//!     // Scrape race entries
+//!     let race = scraper.scrape_race_entries(20251231, 23, 1).await?;
+//!     println!("Found {} entries", race.entries.len());
+//!
 //!     Ok(())
 //! }
 //! ```
 
 mod client;
+mod entries;
 mod exacta;
+mod schedule;
 mod trifecta;
 
 pub use client::{OddsScraper, ScraperConfig, ScraperError};
+pub use entries::{parse_race_entries, ScrapedRaceInfo};
 pub use exacta::parse_exacta_odds;
+pub use schedule::{parse_schedule, ActiveStadium, TodaySchedule};
 pub use trifecta::parse_trifecta_odds;
 
 use serde::{Deserialize, Serialize};

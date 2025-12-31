@@ -1,6 +1,9 @@
 //! HTTP client with rate limiting for boatrace.jp
 
-use super::{parse_exacta_odds, parse_trifecta_odds, ScrapedExactaOdds, ScrapedTrifectaOdds};
+use super::{
+    parse_exacta_odds, parse_race_entries, parse_schedule, parse_trifecta_odds,
+    ScrapedExactaOdds, ScrapedRaceInfo, ScrapedTrifectaOdds, TodaySchedule,
+};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -8,9 +11,11 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
-/// Base URLs for odds pages
+/// Base URLs for pages
 const BASE_URL_EXACTA: &str = "https://www.boatrace.jp/owpc/pc/race/odds2tf";
 const BASE_URL_TRIFECTA: &str = "https://www.boatrace.jp/owpc/pc/race/odds3t";
+const BASE_URL_RACELIST: &str = "https://www.boatrace.jp/owpc/pc/race/racelist";
+const BASE_URL_INDEX: &str = "https://www.boatrace.jp/owpc/pc/race/index";
 
 /// Scraper errors
 #[derive(Debug, Error)]
@@ -238,6 +243,48 @@ impl OddsScraper {
 
         for race_no in 1..=12 {
             let result = self.scrape_trifecta(date, stadium_code, race_no).await;
+            results.push(result);
+        }
+
+        results
+    }
+
+    /// Scrape today's race schedule (active stadiums)
+    pub async fn scrape_schedule(&self, date: u32) -> Result<TodaySchedule, ScraperError> {
+        let url = format!("{}?hd={}", BASE_URL_INDEX, date);
+        tracing::info!("Scraping schedule: {}", url);
+
+        let html = self.fetch_page(&url).await?;
+        parse_schedule(&html, date)
+    }
+
+    /// Scrape race entries for a single race
+    pub async fn scrape_race_entries(
+        &self,
+        date: u32,
+        stadium_code: u8,
+        race_no: u8,
+    ) -> Result<ScrapedRaceInfo, ScraperError> {
+        let url = format!(
+            "{}?rno={}&jcd={:02}&hd={}",
+            BASE_URL_RACELIST, race_no, stadium_code, date
+        );
+        tracing::info!("Scraping entries: {}", url);
+
+        let html = self.fetch_page(&url).await?;
+        parse_race_entries(&html, date, stadium_code, race_no)
+    }
+
+    /// Scrape all race entries for a stadium
+    pub async fn scrape_stadium_entries(
+        &self,
+        date: u32,
+        stadium_code: u8,
+    ) -> Vec<Result<ScrapedRaceInfo, ScraperError>> {
+        let mut results = Vec::with_capacity(12);
+
+        for race_no in 1..=12 {
+            let result = self.scrape_race_entries(date, stadium_code, race_no).await;
             results.push(result);
         }
 

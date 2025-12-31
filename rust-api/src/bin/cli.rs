@@ -149,6 +149,54 @@ enum Commands {
         list_stadiums: bool,
     },
 
+    /// Today's race prediction workflow (scrape + predict)
+    #[cfg(feature = "scraper")]
+    Today {
+        /// Specific stadium codes to predict (comma-separated, e.g., "23,12")
+        #[arg(short, long, value_delimiter = ',')]
+        stadiums: Option<Vec<u8>>,
+
+        /// Specific race numbers to predict (comma-separated, e.g., "1,2,3")
+        #[arg(short, long, value_delimiter = ',')]
+        races: Option<Vec<u8>>,
+
+        /// Include trifecta predictions
+        #[arg(long)]
+        trifecta: bool,
+
+        /// Number of top predictions to show per race
+        #[arg(long, default_value = "5")]
+        top: usize,
+
+        /// EV threshold for betting recommendations
+        #[arg(long, default_value = "1.0")]
+        threshold: f64,
+
+        /// Sort by probability instead of EV
+        #[arg(long)]
+        by_prob: bool,
+
+        /// Bankroll for Kelly sizing
+        #[arg(long, default_value = "100000")]
+        bankroll: i64,
+
+        /// Kelly multiplier (0.25 = quarter Kelly)
+        #[arg(long, default_value = "0.25")]
+        kelly: f64,
+
+        /// Skip odds scraping (use cached odds only)
+        #[arg(long)]
+        no_scrape: bool,
+
+        /// Only show races currently selling tickets
+        #[arg(long)]
+        active_only: bool,
+
+        /// Delay between requests in milliseconds
+        #[arg(long, default_value = "2000")]
+        delay: u64,
+    },
+
     /// Parse raw text files to CSV
     Parse {
         /// Input directory containing raw text files
@@ -237,6 +285,36 @@ fn main() -> Result<()> {
                 list_stadiums,
             } => {
                 run_scrape(&cli.odds_dir, date, stadium, race, trifecta, delay, list_stadiums)?;
+            }
+            #[cfg(feature = "scraper")]
+            Commands::Today {
+                stadiums,
+                races,
+                trifecta,
+                top,
+                threshold,
+                by_prob,
+                bankroll,
+                kelly,
+                no_scrape,
+                active_only,
+                delay,
+            } => {
+                run_today(
+                    &cli.data_dir,
+                    &cli.odds_dir,
+                    stadiums,
+                    races,
+                    trifecta,
+                    top,
+                    threshold,
+                    by_prob,
+                    bankroll,
+                    kelly,
+                    no_scrape,
+                    active_only,
+                    delay,
+                )?;
             }
             Commands::Parse {
                 input,
@@ -900,6 +978,323 @@ fn run_scrape(
             odds_dir
         );
     }
+
+    Ok(())
+}
+
+#[cfg(feature = "scraper")]
+#[allow(clippy::too_many_arguments)]
+fn run_today(
+    _data_dir: &Path,
+    odds_dir: &Path,
+    stadiums: Option<Vec<u8>>,
+    races: Option<Vec<u8>>,
+    trifecta: bool,
+    top: usize,
+    threshold: f64,
+    by_prob: bool,
+    bankroll: i64,
+    kelly_mult: f64,
+    no_scrape: bool,
+    active_only: bool,
+    delay: u64,
+) -> Result<()> {
+    use boatrace::scraper::{ActiveStadium, ScrapedRaceInfo};
+
+    // Get today's date
+    let today = chrono::Local::now();
+    let date: u32 = today.format("%Y%m%d").to_string().parse()?;
+
+    println!(
+        "{}",
+        format!(
+            "================================================================================\n\
+             TODAY'S PREDICTIONS: {} ({})\n\
+             ================================================================================",
+            date,
+            today.format("%a")
+        )
+        .cyan()
+        .bold()
+    );
+    println!();
+
+    // Create runtime for async operations
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("Failed to create tokio runtime")?;
+
+    let config = ScraperConfig {
+        delay_ms: delay,
+        ..Default::default()
+    };
+    let scraper = OddsScraper::new(config);
+
+    // Ensure odds directory exists
+    std::fs::create_dir_all(odds_dir)
+        .with_context(|| format!("Failed to create odds directory: {:?}", odds_dir))?;
+
+    // Get today's schedule (active stadiums)
+    println!("{}", "Detecting active stadiums...".cyan());
+    let schedule = rt.block_on(async { scraper.scrape_schedule(date).await });
+
+    let active_stadiums: Vec<ActiveStadium> = match schedule {
+        Ok(s) => {
+            let mut stadiums_list = s.stadiums;
+
+            // Filter by specified stadiums
+            if let Some(ref filter) = stadiums {
+                stadiums_list.retain(|s| filter.contains(&s.code));
+            }
+
+            // Filter by active_only
+            if active_only {
+                stadiums_list.retain(|s| s.is_selling);
+            }
+
+            stadiums_list
+        }
+        Err(e) => {
+            println!(
+                "{}: Could not detect active stadiums: {}",
+                "Warning".yellow(),
+                e
+            );
+            println!("Using specified stadiums or defaults...");
+
+            // Fall back to specified stadiums or all 24
+            let codes: Vec<u8> = stadiums.clone().unwrap_or((1..=24).collect());
+            codes
+                .into_iter()
+                .map(|code| ActiveStadium {
+                    code,
+                    name: scraper_stadium_name(code).to_string(),
+                    is_selling: true,
+                    current_race: None,
+                    total_races: 12,
+                    event_name: None,
+                    grade: None,
+                })
+                .collect()
+        }
+    };
+
+    if active_stadiums.is_empty() {
+        println!("{}", "No active stadiums found for today.".yellow());
+        return Ok(());
+    }
+
+    println!(
+        "{}: {}/{}\n",
+        "Active Stadiums".green(),
+        active_stadiums.len(),
+        stadiums.as_ref().map(|s| s.len()).unwrap_or(24)
+    );
+
+    // Track totals for summary
+    let mut total_value_bets = 0;
+    let mut total_stake: i64 = 0;
+    let mut total_expected: f64 = 0.0;
+
+    let predictor = FallbackPredictor::new();
+    let kelly = KellyCalculator::new(bankroll, kelly_mult, 100, 0.10, 0.30);
+
+    // Process each stadium
+    for stadium in &active_stadiums {
+        println!(
+            "{}",
+            format!(
+                "--------------------------------------------------------------------------------\n\
+                 [{}] {} {}\n\
+                 --------------------------------------------------------------------------------",
+                stadium.code,
+                stadium.name,
+                stadium
+                    .event_name
+                    .as_ref()
+                    .map(|n| format!("- {}", n))
+                    .unwrap_or_default()
+            )
+            .yellow()
+            .bold()
+        );
+
+        let race_nos: Vec<u8> = races.clone().unwrap_or((1..=stadium.total_races).collect());
+
+        for race_no in &race_nos {
+            // Scrape race entries
+            let race_info: Option<ScrapedRaceInfo> = rt.block_on(async {
+                match scraper
+                    .scrape_race_entries(date, stadium.code, *race_no)
+                    .await
+                {
+                    Ok(info) => Some(info),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to get entries for R{}: {}",
+                            race_no,
+                            e
+                        );
+                        None
+                    }
+                }
+            });
+
+            let race_info = match race_info {
+                Some(info) if info.entries.len() >= 6 => info,
+                _ => {
+                    println!("  R{}: {}", race_no, "Skip (no entries)".dimmed());
+                    continue;
+                }
+            };
+
+            // Scrape odds if not skipped
+            if !no_scrape {
+                let _ = rt.block_on(async {
+                    match scraper.scrape_exacta(date, stadium.code, *race_no).await {
+                        Ok(odds) => {
+                            let filename =
+                                format!("{}_{:02}_{:02}.json", date, stadium.code, race_no);
+                            let filepath = odds_dir.join(&filename);
+                            let json = serde_json::to_string_pretty(&odds)?;
+                            std::fs::write(&filepath, json)?;
+                            Ok::<_, anyhow::Error>(())
+                        }
+                        Err(_) => Ok(()),
+                    }
+                });
+
+                if trifecta {
+                    let _ = rt.block_on(async {
+                        match scraper.scrape_trifecta(date, stadium.code, *race_no).await {
+                            Ok(odds) => {
+                                let filename = format!(
+                                    "{}_{:02}_{:02}_3t.json",
+                                    date, stadium.code, race_no
+                                );
+                                let filepath = odds_dir.join(&filename);
+                                let json = serde_json::to_string_pretty(&odds)?;
+                                std::fs::write(&filepath, json)?;
+                                Ok::<_, anyhow::Error>(())
+                            }
+                            Err(_) => Ok(()),
+                        }
+                    });
+                }
+            }
+
+            // Load odds
+            let exacta_odds = load_exacta_odds(odds_dir, date, stadium.code, *race_no);
+
+            // Run prediction
+            let position_probs = predictor.predict_positions(&race_info.entries);
+            let exacta_probs = predictor.calculate_exacta_probs(&position_probs);
+
+            // Calculate predictions with EV
+            // (first, second, probability, odds, expected_value)
+            #[allow(clippy::type_complexity)]
+            let mut predictions: Vec<(u8, u8, f64, Option<f64>, Option<f64>)> = exacta_probs
+                .iter()
+                .map(|p| {
+                    let odds = exacta_odds
+                        .as_ref()
+                        .and_then(|o| o.get(&(p.first, p.second)).copied());
+                    let ev = odds.map(|o| p.probability * o);
+                    (p.first, p.second, p.probability, odds, ev)
+                })
+                .collect();
+
+            // Sort by probability or EV
+            if by_prob {
+                predictions.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+            } else {
+                predictions.sort_by(|a, b| {
+                    let ev_a = a.4.unwrap_or(0.0);
+                    let ev_b = b.4.unwrap_or(0.0);
+                    ev_b.partial_cmp(&ev_a).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+
+            // Print race header
+            println!(
+                "\n  {} ({})",
+                format!("R{}", race_no).cyan().bold(),
+                race_info.start_time.as_deref().unwrap_or("--:--")
+            );
+
+            // Print top predictions
+            let sort_method = if by_prob { "probability" } else { "EV" };
+            println!(
+                "  Top {} by {}:",
+                top,
+                sort_method
+            );
+            println!(
+                "  {:>8} {:>10} {:>8} {:>8} {:>10}",
+                "Combo", "Prob", "Odds", "EV", "Stake"
+            );
+            println!("  {}", "-".repeat(50));
+
+            for (first, second, prob, odds, ev) in predictions.iter().take(top) {
+                let combo = format!("{}-{}", first, second);
+                let odds_str = odds.map(|o| format!("{:.1}", o)).unwrap_or_else(|| "-".to_string());
+                let ev_str = ev.map(|e| format!("{:.2}", e)).unwrap_or_else(|| "-".to_string());
+
+                let is_value = ev.map(|e| e >= threshold).unwrap_or(false);
+                let stake = if is_value {
+                    if let Some(o) = odds {
+                        let sizing = kelly.calculate_single(*prob, *o);
+                        let kelly_stake = sizing.stake;
+                        total_value_bets += 1;
+                        total_stake += kelly_stake;
+                        total_expected += prob * o * kelly_stake as f64;
+                        format!("¥{}", kelly_stake)
+                    } else {
+                        "-".to_string()
+                    }
+                } else {
+                    "-".to_string()
+                };
+
+                let line = format!(
+                    "  {:>8} {:>9.1}% {:>8} {:>8} {:>10}",
+                    combo,
+                    prob * 100.0,
+                    odds_str,
+                    ev_str,
+                    stake
+                );
+
+                if is_value {
+                    println!("{}", line.green());
+                } else {
+                    println!("{}", line);
+                }
+            }
+        }
+
+        println!();
+    }
+
+    // Print summary
+    println!(
+        "{}",
+        "================================================================================\n\
+         DAILY SUMMARY\n\
+         ================================================================================"
+            .cyan()
+            .bold()
+    );
+    println!(
+        "  Value bets: {} | Total stake: ¥{} | Expected return: ¥{:.0}",
+        total_value_bets, total_stake, total_expected
+    );
+    if total_stake > 0 {
+        let expected_roi = (total_expected / total_stake as f64 - 1.0) * 100.0;
+        println!("  Expected ROI: {:.1}%", expected_roi);
+    }
+    println!("================================================================================");
 
     Ok(())
 }
