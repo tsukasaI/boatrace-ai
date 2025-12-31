@@ -194,12 +194,24 @@ enum UnifiedPredictor {
 }
 
 impl UnifiedPredictor {
+    #[allow(dead_code)]
     fn predict_positions(&mut self, entries: &[RacerEntry]) -> Vec<PositionProb> {
+        self.predict_positions_with_history(entries, None)
+    }
+
+    fn predict_positions_with_history(
+        &mut self,
+        entries: &[RacerEntry],
+        historical: Option<&[crate::data::HistoricalFeatures]>,
+    ) -> Vec<PositionProb> {
         match self {
-            UnifiedPredictor::Onnx(p) => p.predict_positions(entries).unwrap_or_else(|e| {
-                eprintln!("ONNX prediction failed: {}, using fallback", e);
-                FallbackPredictor::new().predict_positions(entries)
-            }),
+            UnifiedPredictor::Onnx(p) => {
+                p.predict_positions_with_history(entries, historical)
+                    .unwrap_or_else(|e| {
+                        eprintln!("ONNX prediction failed: {}, using fallback", e);
+                        FallbackPredictor::new().predict_positions(entries)
+                    })
+            }
             UnifiedPredictor::Fallback(p) => p.predict_positions(entries),
         }
     }
@@ -286,6 +298,11 @@ impl BacktestSimulator {
         let results_data = IndexedResultsData::load(&results_path)?;
         eprintln!("Loaded {} races from results", results_data.len());
 
+        // Load racer history index for historical features
+        eprintln!("Loading racer history...");
+        let history_index = crate::data::RacerHistoryIndex::load(&results_path)?;
+        eprintln!("Loaded history for {} racers", history_index.len());
+
         let mut result = BacktestResult::new();
 
         // Iterate directly over all races (already indexed)
@@ -326,9 +343,25 @@ impl BacktestSimulator {
                 }
             };
 
-            // Run prediction
+            // Compute historical features for each racer
+            let historical_features: Vec<_> = entries
+                .iter()
+                .map(|e| {
+                    history_index.compute_historical_features(
+                        e.racer_id,
+                        *stadium_code,
+                        e.boat_no, // boat_no is the course/lane
+                        *date,     // only consider races before this date
+                    )
+                })
+                .collect();
+
+            // Run prediction with historical features
             let racer_entries: Vec<_> = entries.iter().map(|e| e.to_racer_entry()).collect();
-            let position_probs = self.predictor.predict_positions(&racer_entries);
+            let position_probs = self.predictor.predict_positions_with_history(
+                &racer_entries,
+                Some(&historical_features),
+            );
             let exacta_probs = self.predictor.calculate_exacta_probs(&position_probs);
 
             // Calculate expected values and filter

@@ -2,6 +2,7 @@
 
 pub mod csv_loader;
 pub mod features;
+pub mod history;
 pub mod odds_loader;
 pub mod parser;
 
@@ -11,6 +12,7 @@ pub use features::{
     get_all_feature_names, get_base_feature_names, BaseFeatures, FeatureEngineering,
     HistoricalFeatures, RacerFeatures, RelativeFeatures,
 };
+pub use history::RacerHistoryIndex;
 pub use odds_loader::{load_exacta_odds, load_trifecta_odds};
 pub use parser::{
     flatten_payouts, ParsedRacerEntry, PayoutParser, PayoutRecord, ProgramParser, RaceInfo,

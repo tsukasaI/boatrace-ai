@@ -45,12 +45,25 @@ impl Predictor {
         &mut self,
         entries: &[RacerEntry],
     ) -> Result<Vec<PositionProb>, Box<dyn std::error::Error>> {
+        self.predict_positions_with_history(entries, None)
+    }
+
+    /// Predict position probabilities with real historical features
+    ///
+    /// # Arguments
+    /// * `entries` - 6 racer entries for the race
+    /// * `historical` - Optional historical features for each racer (indexed by position)
+    pub fn predict_positions_with_history(
+        &mut self,
+        entries: &[RacerEntry],
+        historical: Option<&[crate::data::HistoricalFeatures]>,
+    ) -> Result<Vec<PositionProb>, Box<dyn std::error::Error>> {
         if entries.len() != 6 {
             return Err("Exactly 6 entries required".into());
         }
 
         // Create feature matrix (6 boats × 23 features)
-        let features = self.extract_features(entries);
+        let features = self.extract_features_with_history(entries, historical);
 
         // Run inference for each position model
         let mut position_probs = vec![[0.0f64; 6]; 6]; // boats × positions
@@ -85,17 +98,21 @@ impl Predictor {
             .collect())
     }
 
-    /// Extract features from race entries
+    /// Extract features from race entries with optional real historical features
     ///
     /// Order: Base (9) + Historical (9) + Relative (5) = 23 features per boat
-    fn extract_features(&self, entries: &[RacerEntry]) -> Vec<f64> {
+    fn extract_features_with_history(
+        &self,
+        entries: &[RacerEntry],
+        historical: Option<&[crate::data::HistoricalFeatures]>,
+    ) -> Vec<f64> {
         let mut features = Vec::with_capacity(6 * NUM_FEATURES);
 
         // Calculate averages for relative features
         let avg_win_rate: f64 =
             entries.iter().map(|e| e.national_win_rate).sum::<f64>() / entries.len() as f64;
 
-        for entry in entries {
+        for (i, entry) in entries.iter().enumerate() {
             // 1. Base features (9)
             features.push(entry.national_win_rate);
             features.push(entry.national_in2_rate);
@@ -107,27 +124,24 @@ impl Predictor {
             features.push(entry.motor_in2_rate);
             features.push(entry.boat_in2_rate);
 
-            // 2. Historical features (9) - proxy values from base features
-            // Note: For proper predictions, these should be computed from race history
-            let recent_win_rate = entry.national_win_rate / 100.0; // Convert % to ratio
-            let recent_in2_rate = entry.national_in2_rate / 100.0;
-            let recent_in3_rate = (entry.national_in2_rate + 15.0).min(100.0) / 100.0;
-            let recent_avg_rank = 7.0 - entry.national_win_rate / 2.0; // Estimate from win rate
-            let recent_avg_st = 0.15; // Typical start timing
-            let recent_race_count = 30.0; // Assume full history
-            let local_recent_win_rate = entry.local_win_rate / 100.0;
-            let local_race_count = 10.0; // Assume some local races
-            let course_win_rate = Self::get_course_advantage(entry.boat_no);
-
-            features.push(recent_win_rate);
-            features.push(recent_in2_rate);
-            features.push(recent_in3_rate);
-            features.push(recent_avg_rank);
-            features.push(recent_avg_st);
-            features.push(recent_race_count);
-            features.push(local_recent_win_rate);
-            features.push(local_race_count);
-            features.push(course_win_rate);
+            // 2. Historical features (9) - use real if available, otherwise proxy
+            if let Some(hist_list) = historical {
+                if let Some(hist) = hist_list.get(i) {
+                    features.push(hist.recent_win_rate);
+                    features.push(hist.recent_in2_rate);
+                    features.push(hist.recent_in3_rate);
+                    features.push(hist.recent_avg_rank);
+                    features.push(hist.recent_avg_st);
+                    features.push(hist.recent_race_count);
+                    features.push(hist.local_recent_win_rate);
+                    features.push(hist.local_race_count);
+                    features.push(hist.course_win_rate);
+                } else {
+                    self.push_proxy_historical_features(entry, &mut features);
+                }
+            } else {
+                self.push_proxy_historical_features(entry, &mut features);
+            }
 
             // 3. Relative features (5)
             let win_rate_rank = Self::calculate_rank(entries, |e| e.national_win_rate, entry);
@@ -144,6 +158,35 @@ impl Predictor {
         }
 
         features
+    }
+
+    /// Push proxy historical features derived from base features
+    fn push_proxy_historical_features(&self, entry: &RacerEntry, features: &mut Vec<f64>) {
+        let recent_win_rate = entry.national_win_rate / 100.0;
+        let recent_in2_rate = entry.national_in2_rate / 100.0;
+        let recent_in3_rate = (entry.national_in2_rate + 15.0).min(100.0) / 100.0;
+        let recent_avg_rank = 7.0 - entry.national_win_rate / 2.0;
+        let recent_avg_st = 0.15;
+        let recent_race_count = 30.0;
+        let local_recent_win_rate = entry.local_win_rate / 100.0;
+        let local_race_count = 10.0;
+        let course_win_rate = Self::get_course_advantage(entry.boat_no);
+
+        features.push(recent_win_rate);
+        features.push(recent_in2_rate);
+        features.push(recent_in3_rate);
+        features.push(recent_avg_rank);
+        features.push(recent_avg_st);
+        features.push(recent_race_count);
+        features.push(local_recent_win_rate);
+        features.push(local_race_count);
+        features.push(course_win_rate);
+    }
+
+    /// Extract features from race entries (proxy historical features)
+    #[allow(dead_code)]
+    fn extract_features(&self, entries: &[RacerEntry]) -> Vec<f64> {
+        self.extract_features_with_history(entries, None)
     }
 
     /// Encode racer class to numeric value
