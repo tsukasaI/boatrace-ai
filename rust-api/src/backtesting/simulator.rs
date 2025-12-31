@@ -170,6 +170,8 @@ pub struct BacktestConfig {
     pub model_dir: Option<PathBuf>,
     /// Use synthetic odds when real odds are not available
     pub use_synthetic_odds: bool,
+    /// Bet on highest probability combinations (instead of highest EV)
+    pub bet_by_probability: bool,
 }
 
 impl Default for BacktestConfig {
@@ -183,6 +185,7 @@ impl Default for BacktestConfig {
             test_start_date: Some(20240701), // Second half of 2024
             model_dir: None,
             use_synthetic_odds: false,
+            bet_by_probability: false,
         }
     }
 }
@@ -374,15 +377,22 @@ impl BacktestSimulator {
                         (pred.first, pred.second, pred.probability, o, ev)
                     })
                 })
-                .filter(|(_, _, _, _, ev)| *ev > self.config.ev_threshold)
+                .filter(|(_, _, _, _, ev)| {
+                    // When betting by probability, don't filter by EV
+                    self.config.bet_by_probability || *ev > self.config.ev_threshold
+                })
                 .collect();
 
             if value_bets.is_empty() {
                 continue;
             }
 
-            // Sort by EV descending
-            value_bets.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
+            // Sort by probability (if by_prob) or EV (default) descending
+            if self.config.bet_by_probability {
+                value_bets.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+            } else {
+                value_bets.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
+            }
 
             // Limit to max bets per race
             value_bets.truncate(self.config.max_bets_per_race);

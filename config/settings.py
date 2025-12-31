@@ -14,9 +14,9 @@ PROCESSED_DATA_DIR = DATA_DIR / "processed"
 
 # Data collection settings
 DATA_CONFIG = {
-    # Collection period (2 years)
+    # Collection period (2 years + Dec 2025)
     "start_date": date(2023, 1, 1),
-    "end_date": date(2024, 12, 31),
+    "end_date": date(2025, 12, 30),
 
     # URL settings (HTTPS - server redirects from HTTP)
     "base_urls": {

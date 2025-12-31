@@ -115,6 +115,10 @@ enum Commands {
         /// Use synthetic odds when real odds are not available
         #[arg(long)]
         synthetic_odds: bool,
+
+        /// Bet on highest probability combinations (instead of highest EV)
+        #[arg(long)]
+        by_prob: bool,
     },
 
     /// Scrape odds from boatrace.jp (requires scraper feature)
@@ -205,6 +209,7 @@ fn main() -> Result<()> {
                 all_data,
                 model_dir,
                 synthetic_odds,
+                by_prob,
             } => {
                 run_backtest(
                     &cli.data_dir,
@@ -219,6 +224,7 @@ fn main() -> Result<()> {
                     },
                     model_dir,
                     synthetic_odds,
+                    by_prob,
                 )?;
             }
             #[cfg(feature = "scraper")]
@@ -643,6 +649,7 @@ fn run_backtest(
     test_start: Option<u32>,
     model_dir: Option<PathBuf>,
     synthetic_odds: bool,
+    by_prob: bool,
 ) -> Result<()> {
     println!("{}", "Running backtest...".green());
 
@@ -655,9 +662,14 @@ fn run_backtest(
         test_start_date: test_start,
         model_dir: model_dir.clone(),
         use_synthetic_odds: synthetic_odds,
+        bet_by_probability: by_prob,
     };
 
-    println!("EV Threshold: {:.2}", config.ev_threshold);
+    if by_prob {
+        println!("Strategy: Bet on highest probability");
+    } else {
+        println!("EV Threshold: {:.2}", config.ev_threshold);
+    }
     println!("Stake per bet: {}", config.stake);
     println!("Max bets per race: {}", config.max_bets_per_race);
     if let Some(start) = config.test_start_date {
@@ -1201,7 +1213,7 @@ fn run_interactive(data_dir: &Path, odds_dir: &Path) -> Result<()> {
                     .interact_text()?;
 
                 println!();
-                run_backtest(data_dir, odds_dir, threshold, 100, 3, Some(20240701), None, false)?;
+                run_backtest(data_dir, odds_dir, threshold, 100, 3, Some(20240701), None, false, false)?;
                 println!();
             }
             3 => {
