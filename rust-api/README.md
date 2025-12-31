@@ -50,6 +50,34 @@ Options:
 
 ### Commands
 
+#### `today` - Today's Race Predictions (requires `scraper` feature)
+
+```bash
+# Predict all active races (auto-scrapes odds)
+boatrace-cli today
+
+# Specific stadiums (23=Karatsu, 12=Suminoe)
+boatrace-cli today -s 23,12
+
+# With trifecta, high EV threshold
+boatrace-cli today --trifecta --threshold 1.1
+
+# Skip scraping (use cached odds)
+boatrace-cli today --no-scrape
+
+# Only show active races (currently selling tickets)
+boatrace-cli today --active-only
+```
+
+Options:
+- `-s, --stadiums <LIST>` - Comma-separated stadium codes
+- `-r, --races <LIST>` - Comma-separated race numbers
+- `--trifecta` - Include trifecta predictions
+- `--threshold <FLOAT>` - EV threshold (default: 1.0)
+- `--top <INT>` - Predictions per race (default: 5)
+- `--no-scrape` - Use cached odds only
+- `--active-only` - Only active races
+
 #### `predict` - Single Race Prediction
 
 ```bash

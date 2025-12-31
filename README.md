@@ -3,143 +3,93 @@
 An AI system for predicting exacta/trifecta outcomes in Japanese boat racing (Kyotei).
 Aims to improve ROI using an expected value-based betting strategy.
 
+## Tech Stack
+
+| Layer | Technology | Purpose |
+|-------|------------|---------|
+| **Training** | Python + LightGBM | Model training, ONNX export |
+| **Operations** | Rust + ONNX Runtime | CLI, API, prediction, backtesting |
+
 ## Project Structure
 
 ```
 boatrace-ai/
-├── config/
-│   └── settings.py          # Configuration file
+├── config/settings.py           # Configuration
 ├── data/
-│   ├── raw/                  # Raw data (LZH, TXT)
-│   │   ├── results/          # Race results
-│   │   └── programs/         # Race programs
-│   ├── processed/            # Processed data (CSV)
-│   └── odds/                 # Scraped real-time odds (JSON)
-├── src/
-│   ├── data_collection/      # Data collection
-│   │   ├── downloader.py     # Download historical data
-│   │   ├── extractor.py      # LZH extraction
-│   │   ├── odds_scraper.py   # Real-time odds scraper
-│   │   └── collect_daily.py  # Daily odds collection
-│   ├── preprocessing/        # Preprocessing
-│   │   └── parser.py         # Parser
-│   ├── models/               # Prediction models
-│   ├── backtesting/          # Backtesting simulator
-│   └── cli/                  # CLI prediction tool
-├── rust-api/                 # Rust inference API
-├── models/                   # Saved models (pkl, onnx)
-├── tests/                    # Test suite
-├── requirements.txt
-└── README.md
+│   ├── raw/                     # Raw data (LZH, TXT)
+│   ├── processed/               # Processed CSV files
+│   └── odds/                    # Scraped odds (JSON)
+├── models/
+│   ├── boatrace_model.pkl       # LightGBM model
+│   └── onnx/                    # ONNX models for Rust
+├── src/                         # Python (training only)
+│   ├── data_collection/         # Download & extract data
+│   ├── preprocessing/           # Parse raw data
+│   └── models/                  # Train & export models
+├── rust-api/                    # Rust (all operations)
+│   └── src/
+│       ├── bin/cli.rs           # CLI binary
+│       ├── main.rs              # API server
+│       ├── predictor.rs         # ONNX inference
+│       ├── backtesting/         # Backtest simulator
+│       └── scraper/             # Odds scraping
+└── notebooks/                   # Jupyter exploration
 ```
 
-## Setup
+## Quick Start
+
+### 1. Initial Setup (Python)
 
 ```bash
-# Create virtual environment (using uv)
-uv venv
-source .venv/bin/activate
-
 # Install dependencies
+uv venv && source .venv/bin/activate
 uv pip install -r requirements.txt
-```
 
-## Usage
-
-### Phase 1: Data Collection
-
-```bash
-# 1. Download data (2023-2024, about 2 years)
+# Download & parse data
 uv run python src/data_collection/downloader.py
-
-# 2. Extract LZH files
 uv run python src/data_collection/extractor.py
-
-# 3. Convert to CSV
 uv run python src/preprocessing/parser.py
-```
 
-### Phase 2: Model Training
-
-```bash
-# Train with historical features
+# Train model & export to ONNX
 uv run python src/models/train.py --historical
-
-# Export to ONNX
 uv run python src/models/export_onnx.py --verify
 ```
 
-### Phase 3: Backtesting
+### 2. Build Rust CLI
 
 ```bash
-# Run backtest with EV > 1.0 strategy
-uv run python -m src.backtesting.simulator
+cd rust-api
+cargo build --release --features full
 
-# Use real scraped odds (with fallback to payout CSV)
-uv run python -m src.backtesting.simulator --use-real-odds
-
-# Use synthetic odds (for testing without data leakage)
-uv run python -m src.backtesting.simulator --synthetic-odds
+# Optional: add alias
+echo "alias boat='$(pwd)/target/release/boatrace-cli'" >> ~/.zshrc
 ```
 
-### Phase 4: Rust Inference API
+### 3. Daily Operations (Rust CLI)
 
 ```bash
-cd rust-api && cargo run
-# GET  /health        - Health check
-# POST /predict       - Full prediction
-# POST /predict/exacta - Exacta only
+# Predict today's races (auto-scrapes odds)
+boat today
+
+# Specific stadiums
+boat today -s 23,12
+
+# With trifecta, high EV only
+boat today --trifecta --threshold 1.1
 ```
 
-### Phase 4.5: CLI Prediction
+## Rust CLI Commands
 
-```bash
-# Interactive mode
-uv run python -m src.cli.predict --interactive
+| Command | Description |
+|---------|-------------|
+| `today` | Today's predictions with live odds |
+| `predict` | Predict a specific race |
+| `list` | List races for a date |
+| `backtest` | Run backtesting simulation |
+| `scrape` | Scrape odds from boatrace.jp |
+| `parse` | Parse raw data files |
 
-# Single race prediction
-uv run python -m src.cli.predict --date 20251230 --stadium 23 --race 1
-
-# With trifecta
-uv run python -m src.cli.predict -d 20251230 -s 23 -r 1 --trifecta
-
-# List available races
-uv run python -m src.cli.predict --list 20251230
-```
-
-### Phase 5: Odds Collection
-
-```bash
-# Scrape single race exacta odds
-uv run python -m src.data_collection.odds_scraper -d 20251230 -s 23 -r 1
-
-# Scrape trifecta odds
-uv run python -m src.data_collection.odds_scraper -d 20251230 -s 23 -r 1 --trifecta
-
-# Collect all stadiums for a date
-uv run python -m src.data_collection.collect_daily --date 20251230
-
-# Collect trifecta odds for all stadiums
-uv run python -m src.data_collection.collect_daily --date 20251230 --trifecta
-
-# List stadium codes
-uv run python -m src.data_collection.odds_scraper --list-stadiums
-```
-
-## Data Sources
-
-- Race Results: https://www1.mbrace.or.jp/od2/K/
-- Race Programs: https://www1.mbrace.or.jp/od2/B/
-- Official Data: https://www.boatrace.jp/owpc/pc/extra/data/download.html
-
-## Development Phases
-
-- [x] Phase 1: Data Collection & Exploration
-- [x] Phase 2: Model Building
-- [x] Phase 3: Backtesting
-- [x] Phase 4: Rust Inference API
-- [x] Phase 4.5: CLI Prediction Tool
-- [x] Phase 5: Real-time Odds Scraping
+See [rust-api/README.md](rust-api/README.md) for detailed CLI documentation.
 
 ## Supported Bet Types
 
@@ -150,33 +100,24 @@ uv run python -m src.data_collection.odds_scraper --list-stadiums
 
 ## Strategy
 
-**Expected Value Based**
 ```
 expected_value = predicted_probability × odds
 Buy only when expected_value > 1.0
 ```
 
-## Data Limitations
+## Data Sources
 
-**Historical odds are NOT available** on boatrace.jp (only ~1 week retention).
+- Official Data: https://www.boatrace.jp/owpc/pc/extra/data/download.html
+- Race Results: https://www1.mbrace.or.jp/od2/K/
+- Race Programs: https://www1.mbrace.or.jp/od2/B/
 
-Recommended workflow:
-1. Collect program data + odds daily for same dates
-2. Use `--synthetic-odds` for historical backtesting
-3. Avoid payout CSV fallback (causes data leakage)
+## Development Status
 
-## Roadmap
-
-### Phase 6: Rust Refactoring ← CURRENT
-- [ ] Odds scraper in Rust (reqwest + scraper)
-- [ ] Feature engineering in Rust (polars)
-- [ ] CLI in Rust (single binary)
-
-### Phase 7: Model Improvements
-- [ ] Weather/water features
-- [ ] Quinella support
-- [ ] Deep learning models
-
-### Phase 8: Production
-- [ ] Performance tracking (SQLite)
-- [ ] Notifications (Telegram/Discord)
+- [x] Data Collection & Parsing
+- [x] Model Training (LightGBM)
+- [x] ONNX Export
+- [x] Rust CLI & API
+- [x] Backtesting
+- [x] Odds Scraping
+- [ ] Model Improvements (weather, deep learning)
+- [ ] Production Features (notifications, tracking)
