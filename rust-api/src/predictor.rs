@@ -100,7 +100,7 @@ impl Predictor {
 
     /// Extract features from race entries with optional real historical features
     ///
-    /// Order: Base (9) + Historical (9) + Relative (5) = 23 features per boat
+    /// Order: Base (9) + Historical (9) + Relative (5) + Exhibition (3) = 26 features per boat
     fn extract_features_with_history(
         &self,
         entries: &[RacerEntry],
@@ -155,6 +155,12 @@ impl Predictor {
             features.push(motor_rate_rank);
             features.push(boat_rate_rank);
             features.push(course_advantage);
+
+            // 4. Exhibition time features (3) - use defaults when not available
+            // TODO: Accept exhibition times as parameter when available from scraper
+            features.push(6.80); // exhibition_time (average)
+            features.push(3.5);  // exhibition_time_rank (middle rank)
+            features.push(0.0);  // exhibition_time_diff (no difference from average)
         }
 
         features
