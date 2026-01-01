@@ -39,6 +39,7 @@ impl ProgramEntry {
             age: self.age,
             weight: self.weight,
             racer_class: self.racer_class.clone(),
+            branch: self.branch.clone(),
             national_win_rate: self.national_win_rate,
             national_in2_rate: self.national_in2_rate,
             local_win_rate: self.local_win_rate,

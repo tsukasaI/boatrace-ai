@@ -84,6 +84,8 @@ impl Default for BacktestResult {
 pub struct IndexedResultsData {
     /// Results indexed by race key: (1st place boat, 2nd place boat)
     results: HashMap<RaceKey, (u8, u8)>,
+    /// Exhibition times indexed by race key: [boat1_time, boat2_time, ..., boat6_time]
+    exhibition_times: HashMap<RaceKey, [f64; 6]>,
 }
 
 impl IndexedResultsData {
@@ -98,9 +100,10 @@ impl IndexedResultsData {
         let race_col = df.column("race_no")?.i64()?;
         let boat_col = df.column("boat_no")?.i64()?;
         let rank_col = df.column("rank")?.i64()?;
+        let exhibition_col = df.column("exhibition_time")?.f64()?;
 
         // First pass: collect all entries by race
-        let mut race_entries: HashMap<RaceKey, Vec<(u8, u8)>> = HashMap::new();
+        let mut race_entries: HashMap<RaceKey, Vec<(u8, u8, f64)>> = HashMap::new();
 
         for i in 0..df.height() {
             if let (Some(date), Some(stadium), Some(race), Some(boat), Some(rank)) = (
@@ -110,40 +113,53 @@ impl IndexedResultsData {
                 boat_col.get(i),
                 rank_col.get(i),
             ) {
+                let exhibition = exhibition_col.get(i).unwrap_or(6.80);
                 let key = (date as u32, stadium as u8, race as u8);
                 race_entries
                     .entry(key)
                     .or_default()
-                    .push((boat as u8, rank as u8));
+                    .push((boat as u8, rank as u8, exhibition));
             }
         }
 
-        // Second pass: extract 1st and 2nd place for each race
+        // Second pass: extract 1st/2nd place and exhibition times for each race
         let mut results: HashMap<RaceKey, (u8, u8)> = HashMap::new();
+        let mut exhibition_times: HashMap<RaceKey, [f64; 6]> = HashMap::new();
 
         for (key, entries) in race_entries {
             let mut first: Option<u8> = None;
             let mut second: Option<u8> = None;
+            let mut times = [6.80; 6]; // Default exhibition time
 
-            for (boat, rank) in entries {
+            for (boat, rank, exhibition) in entries {
                 if rank == 1 {
                     first = Some(boat);
                 } else if rank == 2 {
                     second = Some(boat);
                 }
+                // Store exhibition time by boat index (boat_no - 1)
+                if boat >= 1 && boat <= 6 {
+                    times[(boat - 1) as usize] = exhibition;
+                }
             }
 
             if let (Some(f), Some(s)) = (first, second) {
                 results.insert(key, (f, s));
+                exhibition_times.insert(key, times);
             }
         }
 
-        Ok(Self { results })
+        Ok(Self { results, exhibition_times })
     }
 
     /// Get race result (1st and 2nd place boats) - O(1)
     pub fn get_race_result(&self, date: u32, stadium_code: u8, race_no: u8) -> Option<(u8, u8)> {
         self.results.get(&(date, stadium_code, race_no)).copied()
+    }
+
+    /// Get exhibition times for all 6 boats - O(1)
+    pub fn get_exhibition_times(&self, date: u32, stadium_code: u8, race_no: u8) -> Option<[f64; 6]> {
+        self.exhibition_times.get(&(date, stadium_code, race_no)).copied()
     }
 
     /// Total number of races with results
@@ -199,17 +215,27 @@ enum UnifiedPredictor {
 impl UnifiedPredictor {
     #[allow(dead_code)]
     fn predict_positions(&mut self, entries: &[RacerEntry]) -> Vec<PositionProb> {
-        self.predict_positions_with_history(entries, None)
+        self.predict_positions_full(entries, None, None)
     }
 
+    #[allow(dead_code)]
     fn predict_positions_with_history(
         &mut self,
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
     ) -> Vec<PositionProb> {
+        self.predict_positions_full(entries, historical, None)
+    }
+
+    fn predict_positions_full(
+        &mut self,
+        entries: &[RacerEntry],
+        historical: Option<&[crate::data::HistoricalFeatures]>,
+        exhibition_times: Option<[f64; 6]>,
+    ) -> Vec<PositionProb> {
         match self {
             UnifiedPredictor::Onnx(p) => {
-                p.predict_positions_with_history(entries, historical)
+                p.predict_positions_full(entries, historical, exhibition_times)
                     .unwrap_or_else(|e| {
                         eprintln!("ONNX prediction failed: {}, using fallback", e);
                         FallbackPredictor::new().predict_positions(entries)
@@ -353,17 +379,22 @@ impl BacktestSimulator {
                     history_index.compute_historical_features(
                         e.racer_id,
                         *stadium_code,
-                        e.boat_no, // boat_no is the course/lane
+                        e.boat_no, // course (assuming boat_no = starting course)
+                        e.boat_no, // boat_no for course-taking features
                         *date,     // only consider races before this date
                     )
                 })
                 .collect();
 
-            // Run prediction with historical features
+            // Get exhibition times from results data
+            let exhibition_times = results_data.get_exhibition_times(*date, *stadium_code, *race_no);
+
+            // Run prediction with historical features and exhibition times
             let racer_entries: Vec<_> = entries.iter().map(|e| e.to_racer_entry()).collect();
-            let position_probs = self.predictor.predict_positions_with_history(
+            let position_probs = self.predictor.predict_positions_full(
                 &racer_entries,
                 Some(&historical_features),
+                exhibition_times,
             );
             let exacta_probs = self.predictor.calculate_exacta_probs(&position_probs);
 

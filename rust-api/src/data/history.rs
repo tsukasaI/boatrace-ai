@@ -103,12 +103,14 @@ impl RacerHistoryIndex {
     /// * `racer_id` - The racer's ID
     /// * `stadium_code` - Current stadium (for local features)
     /// * `course` - Current course/lane (for course-specific features)
+    /// * `boat_no` - Current boat number (for course-taking features)
     /// * `before_date` - Only consider races before this date
     pub fn compute_historical_features(
         &self,
         racer_id: u32,
         stadium_code: u8,
         course: u8,
+        _boat_no: u8, // Reserved for future course-taking features
         before_date: u32,
     ) -> HistoricalFeatures {
         let recent_races = self.get_recent_races(racer_id, before_date, RECENT_RACE_LIMIT);
@@ -124,6 +126,16 @@ impl RacerHistoryIndex {
         let in3 = recent_races.iter().filter(|r| r.rank <= 3).count() as f64;
         let avg_rank: f64 = recent_races.iter().map(|r| r.rank as f64).sum::<f64>() / race_count;
         let avg_st: f64 = recent_races.iter().map(|r| r.start_timing).sum::<f64>() / race_count;
+
+        // Start timing statistics
+        let st_values: Vec<f64> = recent_races.iter().map(|r| r.start_timing).collect();
+        let st_consistency = if st_values.len() > 1 {
+            Self::std_dev(&st_values)
+        } else {
+            0.05 // Default
+        };
+        let flying_start_rate = st_values.iter().filter(|&&st| st < 0.0).count() as f64 / race_count;
+        let late_start_rate = st_values.iter().filter(|&&st| st > 0.20).count() as f64 / race_count;
 
         // Local (stadium-specific) stats
         let local_races: Vec<_> = recent_races
@@ -145,11 +157,31 @@ impl RacerHistoryIndex {
             .collect();
         let course_race_count = course_races.len() as f64;
         let course_wins = course_races.iter().filter(|r| r.rank == 1).count() as f64;
+        let course_in2 = course_races.iter().filter(|r| r.rank <= 2).count() as f64;
         let course_win_rate = if course_race_count > 0.0 {
             course_wins / course_race_count
         } else {
             // Default to historical course advantage if no data
             Self::default_course_win_rate(course)
+        };
+        let course_in2_rate = if course_race_count > 0.0 {
+            course_in2 / course_race_count
+        } else {
+            0.0
+        };
+
+        // Course-taking features (difference between actual course and boat_no)
+        // Note: We use historical boat_no which we don't have, so approximate with course
+        // This is computed differently in Python where we have boat_no from program
+        let avg_course_diff = 0.0; // Default - computed differently in practice
+        let inside_take_rate = 0.0; // Default - computed differently in practice
+
+        // Weighted recent win rate (last 5 races)
+        let recent_5: Vec<_> = recent_races.iter().take(5).collect();
+        let weighted_recent_win = if recent_5.len() >= 5 {
+            recent_5.iter().filter(|r| r.rank == 1).count() as f64 / recent_5.len() as f64
+        } else {
+            wins / race_count
         };
 
         HistoricalFeatures {
@@ -162,7 +194,24 @@ impl RacerHistoryIndex {
             local_recent_win_rate,
             local_race_count,
             course_win_rate,
+            course_in2_rate,
+            st_consistency,
+            flying_start_rate,
+            late_start_rate,
+            avg_course_diff,
+            inside_take_rate,
+            weighted_recent_win,
         }
+    }
+
+    /// Calculate standard deviation
+    fn std_dev(values: &[f64]) -> f64 {
+        if values.len() <= 1 {
+            return 0.0;
+        }
+        let mean = values.iter().sum::<f64>() / values.len() as f64;
+        let variance = values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / values.len() as f64;
+        variance.sqrt()
     }
 
     /// Default course win rate based on historical averages
@@ -204,7 +253,7 @@ mod tests {
         let index = RacerHistoryIndex {
             history: HashMap::new(),
         };
-        let features = index.compute_historical_features(9999, 1, 1, 20240115);
+        let features = index.compute_historical_features(9999, 1, 1, 1, 20240115);
 
         // Should return defaults
         assert_eq!(features.recent_race_count, 0.0);

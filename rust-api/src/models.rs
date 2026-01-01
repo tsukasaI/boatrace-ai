@@ -9,6 +9,7 @@ pub struct RacerEntry {
     pub age: u8,
     pub weight: u8,
     pub racer_class: String,
+    pub branch: String,
     pub national_win_rate: f64,
     pub national_in2_rate: f64,
     pub local_win_rate: f64,

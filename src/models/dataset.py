@@ -36,24 +36,32 @@ class DatasetBuilder:
     def load_data(
         self,
         data_dir: Path = None,
-    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Load CSV data
 
         Returns:
-            (programs_df, results_df)
+            (programs_df, results_df, races_df)
         """
         data_dir = data_dir or PROCESSED_DATA_DIR
 
         programs_df = pd.read_csv(data_dir / "programs_entries.csv")
         results_df = pd.read_csv(data_dir / "results_entries.csv")
 
-        return programs_df, results_df
+        # Load races data for race_type
+        races_path = data_dir / "programs_races.csv"
+        if races_path.exists():
+            races_df = pd.read_csv(races_path)
+        else:
+            races_df = None
+
+        return programs_df, results_df, races_df
 
     def merge_data(
         self,
         programs_df: pd.DataFrame,
         results_df: pd.DataFrame,
+        races_df: pd.DataFrame = None,
     ) -> pd.DataFrame:
         """
         Merge program and results data
@@ -61,12 +69,14 @@ class DatasetBuilder:
         Args:
             programs_df: Program data
             results_df: Results data
+            races_df: Race info data (for race_type)
 
         Returns:
             Merged DataFrame
         """
         # Merge keys
         merge_keys = ["date", "stadium_code", "race_no", "boat_no"]
+        race_keys = ["date", "stadium_code", "race_no"]
 
         # Select required columns from results data
         results_cols = ["racer_id", "rank", "course", "start_timing"]
@@ -74,13 +84,22 @@ class DatasetBuilder:
             results_cols.append("exhibition_time")
         results_subset = results_df[merge_keys + results_cols]
 
-        # Merge
+        # Merge programs with results
         merged = programs_df.merge(
             results_subset,
             on=merge_keys,
             how="inner",
             suffixes=("", "_result"),
         )
+
+        # Merge with races data for race_type
+        if races_df is not None and "race_type" in races_df.columns:
+            races_subset = races_df[race_keys + ["race_type"]].drop_duplicates()
+            merged = merged.merge(
+                races_subset,
+                on=race_keys,
+                how="left",
+            )
 
         return merged
 
@@ -141,10 +160,10 @@ class DatasetBuilder:
             Dataset dictionary
         """
         # Load data
-        programs_df, results_df = self.load_data(data_dir)
+        programs_df, results_df, races_df = self.load_data(data_dir)
 
         # Merge data
-        merged_df = self.merge_data(programs_df, results_df)
+        merged_df = self.merge_data(programs_df, results_df, races_df)
 
         # Generate features
         if include_historical:

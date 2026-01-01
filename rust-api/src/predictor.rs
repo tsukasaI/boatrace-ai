@@ -8,8 +8,9 @@ use tracing::info;
 
 /// Number of position models (one per finishing position 1-6)
 const NUM_MODELS: usize = 6;
-/// Number of features expected by the model (9 base + 9 historical + 5 relative + 3 exhibition)
-const NUM_FEATURES: usize = 26;
+/// Number of features expected by the model
+/// Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) = 42
+const NUM_FEATURES: usize = 42;
 
 /// ONNX-based predictor for boat race outcomes
 pub struct Predictor {
@@ -58,12 +59,27 @@ impl Predictor {
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
     ) -> Result<Vec<PositionProb>, Box<dyn std::error::Error>> {
+        self.predict_positions_full(entries, historical, None)
+    }
+
+    /// Predict position probabilities with all features
+    ///
+    /// # Arguments
+    /// * `entries` - 6 racer entries for the race
+    /// * `historical` - Optional historical features for each racer (indexed by position)
+    /// * `exhibition_times` - Optional exhibition times for each boat [boat1_time, ..., boat6_time]
+    pub fn predict_positions_full(
+        &mut self,
+        entries: &[RacerEntry],
+        historical: Option<&[crate::data::HistoricalFeatures]>,
+        exhibition_times: Option<[f64; 6]>,
+    ) -> Result<Vec<PositionProb>, Box<dyn std::error::Error>> {
         if entries.len() != 6 {
             return Err("Exactly 6 entries required".into());
         }
 
-        // Create feature matrix (6 boats × 23 features)
-        let features = self.extract_features_with_history(entries, historical);
+        // Create feature matrix (6 boats × 42 features)
+        let features = self.extract_features_full(entries, historical, exhibition_times);
 
         // Run inference for each position model
         let mut position_probs = vec![[0.0f64; 6]; 6]; // boats × positions
@@ -98,13 +114,14 @@ impl Predictor {
             .collect())
     }
 
-    /// Extract features from race entries with optional real historical features
+    /// Extract features from race entries with optional real historical features and exhibition times
     ///
-    /// Order: Base (9) + Historical (9) + Relative (5) + Exhibition (3) = 26 features per boat
-    fn extract_features_with_history(
+    /// Order: Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) = 42 features per boat
+    fn extract_features_full(
         &self,
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
+        exhibition_times: Option<[f64; 6]>,
     ) -> Vec<f64> {
         let mut features = Vec::with_capacity(6 * NUM_FEATURES);
 
@@ -112,19 +129,48 @@ impl Predictor {
         let avg_win_rate: f64 =
             entries.iter().map(|e| e.national_win_rate).sum::<f64>() / entries.len() as f64;
 
+        // Calculate equipment scores for ranking
+        let equipment_scores: Vec<f64> = entries
+            .iter()
+            .map(|e| (e.motor_in2_rate + e.boat_in2_rate) / 2.0)
+            .collect();
+
+        // Get exhibition times or use defaults
+        let exh_times = exhibition_times.unwrap_or([6.80; 6]);
+
+        // Calculate exhibition time average and ranks
+        let valid_times: Vec<f64> = exh_times.iter().filter(|&&t| t > 0.0).copied().collect();
+        let avg_exhibition = if valid_times.is_empty() {
+            6.80
+        } else {
+            valid_times.iter().sum::<f64>() / valid_times.len() as f64
+        };
+
+        // Calculate exhibition time ranks (lower time = better rank = 1)
+        let mut exh_ranked: Vec<(usize, f64)> = exh_times.iter().enumerate().map(|(i, &t)| (i, t)).collect();
+        exh_ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut exh_ranks = [3.5; 6];
+        for (rank, (idx, _)) in exh_ranked.iter().enumerate() {
+            exh_ranks[*idx] = (rank + 1) as f64;
+        }
+
         for (i, entry) in entries.iter().enumerate() {
-            // 1. Base features (9)
+            let class_encoded = Self::encode_class(&entry.racer_class);
+            let branch_encoded = Self::encode_branch(&entry.branch);
+
+            // 1. Base features (10)
             features.push(entry.national_win_rate);
             features.push(entry.national_in2_rate);
             features.push(entry.local_win_rate);
             features.push(entry.local_in2_rate);
             features.push(entry.age as f64);
             features.push(entry.weight as f64);
-            features.push(Self::encode_class(&entry.racer_class));
+            features.push(class_encoded);
+            features.push(branch_encoded);
             features.push(entry.motor_in2_rate);
             features.push(entry.boat_in2_rate);
 
-            // 2. Historical features (9) - use real if available, otherwise proxy
+            // 2. Historical features (16) - use real if available, otherwise proxy
             if let Some(hist_list) = historical {
                 if let Some(hist) = hist_list.get(i) {
                     features.push(hist.recent_win_rate);
@@ -136,6 +182,14 @@ impl Predictor {
                     features.push(hist.local_recent_win_rate);
                     features.push(hist.local_race_count);
                     features.push(hist.course_win_rate);
+                    // New historical features
+                    features.push(hist.course_in2_rate);
+                    features.push(hist.st_consistency);
+                    features.push(hist.flying_start_rate);
+                    features.push(hist.late_start_rate);
+                    features.push(hist.avg_course_diff);
+                    features.push(hist.inside_take_rate);
+                    features.push(hist.weighted_recent_win);
                 } else {
                     self.push_proxy_historical_features(entry, &mut features);
                 }
@@ -156,17 +210,58 @@ impl Predictor {
             features.push(boat_rate_rank);
             features.push(course_advantage);
 
-            // 4. Exhibition time features (3) - use defaults when not available
-            // TODO: Accept exhibition times as parameter when available from scraper
-            features.push(6.80); // exhibition_time (average)
-            features.push(3.5);  // exhibition_time_rank (middle rank)
-            features.push(0.0);  // exhibition_time_diff (no difference from average)
+            // 4. Exhibition time features (3) - use actual times if available
+            let boat_idx = (entry.boat_no - 1) as usize;
+            let exhibition_time = exh_times[boat_idx];
+            let exhibition_time_rank = exh_ranks[boat_idx];
+            let exhibition_time_diff = exhibition_time - avg_exhibition;
+            features.push(exhibition_time);
+            features.push(exhibition_time_rank);
+            features.push(exhibition_time_diff);
+
+            // 5. Race context features (2)
+            let race_grade = 1.0; // Default to qualifying race
+            let is_final = 0.0;
+            features.push(race_grade);
+            features.push(is_final);
+
+            // 6. Interaction features (6)
+            // class × course
+            let class_x_course = class_encoded * course_advantage;
+            // motor × exhibition score (normalized)
+            let exhibition_score = 7.0 - exhibition_time.clamp(6.5, 7.5);
+            let motor_x_exhibition = entry.motor_in2_rate * exhibition_score / 100.0;
+            // equipment combined score
+            let equipment_score = equipment_scores[i];
+            // equipment rank in race
+            let equipment_rank = Self::calculate_rank_by_value(&equipment_scores, equipment_scores[i]);
+            // favorite score
+            let favorite_score = (class_encoded / 4.0
+                + (7.0 - win_rate_rank) / 6.0
+                + (7.0 - equipment_rank) / 6.0
+                + course_advantage)
+                / 4.0;
+            // upset potential
+            let upset_potential = class_encoded * (1.0 - course_advantage);
+
+            features.push(class_x_course);
+            features.push(motor_x_exhibition);
+            features.push(equipment_score);
+            features.push(equipment_rank);
+            features.push(favorite_score);
+            features.push(upset_potential);
         }
 
         features
     }
 
-    /// Push proxy historical features derived from base features
+    /// Calculate rank by value in a list (higher value = better rank)
+    fn calculate_rank_by_value(values: &[f64], target: f64) -> f64 {
+        let rank = values.iter().filter(|&&v| v > target).count() + 1;
+        rank as f64
+    }
+
+    /// Push proxy historical features derived from base features (16 features total)
     fn push_proxy_historical_features(&self, entry: &RacerEntry, features: &mut Vec<f64>) {
         let recent_win_rate = entry.national_win_rate / 100.0;
         let recent_in2_rate = entry.national_in2_rate / 100.0;
@@ -178,6 +273,7 @@ impl Predictor {
         let local_race_count = 10.0;
         let course_win_rate = Self::get_course_advantage(entry.boat_no);
 
+        // Original 9 features
         features.push(recent_win_rate);
         features.push(recent_in2_rate);
         features.push(recent_in3_rate);
@@ -187,12 +283,21 @@ impl Predictor {
         features.push(local_recent_win_rate);
         features.push(local_race_count);
         features.push(course_win_rate);
+
+        // 7 new historical features with default values
+        features.push(recent_in2_rate); // course_in2_rate (proxy)
+        features.push(0.05);            // st_consistency (default)
+        features.push(0.0);             // flying_start_rate
+        features.push(0.0);             // late_start_rate
+        features.push(0.0);             // avg_course_diff
+        features.push(0.0);             // inside_take_rate
+        features.push(recent_win_rate); // weighted_recent_win (proxy)
     }
 
     /// Extract features from race entries (proxy historical features)
     #[allow(dead_code)]
     fn extract_features(&self, entries: &[RacerEntry]) -> Vec<f64> {
-        self.extract_features_with_history(entries, None)
+        self.extract_features_full(entries, None, None)
     }
 
     /// Encode racer class to numeric value
@@ -203,6 +308,23 @@ impl Predictor {
             "B1" => 2.0,
             "B2" => 1.0,
             _ => 2.0,
+        }
+    }
+
+    /// Encode branch/region to numeric value (grouped by geography)
+    fn encode_branch(branch: &str) -> f64 {
+        match branch {
+            // Kanto
+            "群馬" | "埼玉" | "東京" => 1.0,
+            // Tokai
+            "静岡" | "愛知" | "三重" => 2.0,
+            // Kinki
+            "滋賀" | "大阪" | "兵庫" => 3.0,
+            // Chugoku/Shikoku
+            "岡山" | "広島" | "山口" | "徳島" | "香川" => 4.0,
+            // Kyushu
+            "福岡" | "佐賀" | "長崎" | "大分" => 5.0,
+            _ => 0.0,
         }
     }
 
@@ -527,6 +649,7 @@ mod tests {
                 age: 53,
                 weight: 51,
                 racer_class: "A2".to_string(),
+                branch: "福岡".to_string(),
                 national_win_rate: 5.10,
                 national_in2_rate: 30.40,
                 local_win_rate: 5.91,
@@ -543,6 +666,7 @@ mod tests {
                 age: 25,
                 weight: 52,
                 racer_class: "B1".to_string(),
+                branch: "大阪".to_string(),
                 national_win_rate: 5.09,
                 national_in2_rate: 32.63,
                 local_win_rate: 4.33,
@@ -559,6 +683,7 @@ mod tests {
                 age: 24,
                 weight: 54,
                 racer_class: "B1".to_string(),
+                branch: "東京".to_string(),
                 national_win_rate: 4.18,
                 national_in2_rate: 20.48,
                 local_win_rate: 2.64,
@@ -575,6 +700,7 @@ mod tests {
                 age: 35,
                 weight: 53,
                 racer_class: "B1".to_string(),
+                branch: "愛知".to_string(),
                 national_win_rate: 4.92,
                 national_in2_rate: 26.03,
                 local_win_rate: 4.96,
@@ -591,6 +717,7 @@ mod tests {
                 age: 29,
                 weight: 53,
                 racer_class: "B1".to_string(),
+                branch: "広島".to_string(),
                 national_win_rate: 3.66,
                 national_in2_rate: 16.42,
                 local_win_rate: 4.84,
@@ -607,6 +734,7 @@ mod tests {
                 age: 41,
                 weight: 55,
                 racer_class: "B1".to_string(),
+                branch: "佐賀".to_string(),
                 national_win_rate: 4.26,
                 national_in2_rate: 20.78,
                 local_win_rate: 4.69,

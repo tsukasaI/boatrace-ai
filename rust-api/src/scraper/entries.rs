@@ -160,6 +160,7 @@ pub fn parse_race_entries(
             age,
             weight,
             racer_class: racer_class.unwrap_or_else(|| "B1".to_string()),
+            branch: String::new(), // Branch not available from web scraping
             national_win_rate,
             national_in2_rate,
             local_win_rate,
