@@ -142,6 +142,12 @@ boat list -d 20240115
 # With ONNX model + synthetic odds
 boat backtest --all-data --model-dir ../models/onnx --synthetic-odds
 
+# With real odds (recommended: use --max-odds or --by-prob)
+boat backtest --all-data --model-dir ../models/onnx --max-odds 30
+
+# Probability-based betting (best for real odds)
+boat backtest --all-data --model-dir ../models/onnx --by-prob
+
 # Custom EV threshold
 boat backtest --all-data --threshold 1.1
 ```
@@ -237,6 +243,44 @@ P(boat_i=1st, boat_j=2nd) ≈ P(boat_i=1st) × P(boat_j=2nd) / (1 - P(boat_j=1st
 2. **Encoding**: Raw files use CP932 (Shift-JIS)
 3. **Data Split**: 2023 train / 2024-H1 val / 2024-H2 test
 4. **Historical Odds**: boatrace.jp only keeps ~1 week of odds
+
+## Betting Strategy
+
+### Synthetic vs Real Odds
+
+The model behaves differently with synthetic odds (generated from probabilities) vs real market odds:
+
+| Strategy | Synthetic Odds | Real Odds |
+|----------|---------------|-----------|
+| EV (default) | +14.9% ROI | -96.4% ROI |
+| EV + max-odds 30 | N/A | +35.8% ROI |
+| Probability (--by-prob) | N/A | +42.4% ROI |
+
+**Why EV fails with real odds**: The model exhibits "favorite-longshot bias" - it overestimates probabilities for longshots (high odds). Real odds already reflect market efficiency, so high-EV bets tend to be on extreme longshots that rarely win.
+
+### Recommended Settings
+
+**For backtesting with synthetic odds:**
+```bash
+boat backtest --all-data --model-dir ../models/onnx --synthetic-odds
+```
+
+**For backtesting/betting with real odds:**
+```bash
+# Option 1: Probability-based (highest total profit)
+boat backtest --all-data --model-dir ../models/onnx --by-prob
+
+# Option 2: EV with odds cap (more selective)
+boat backtest --all-data --model-dir ../models/onnx --max-odds 30
+```
+
+### Strategy Comparison (Real Odds)
+
+| Strategy | Bets | Wins | Hit Rate | ROI | Avg Odds |
+|----------|------|------|----------|-----|----------|
+| EV (no cap) | 2,448 | 1 | 0.04% | -96.4% | 461.9 |
+| EV + max-odds 30 | 453 | 24 | 5.3% | +35.8% | 26.3 |
+| Probability | 2,448 | 467 | 19.1% | +42.4% | 10.7 |
 
 ## Backtest Results (Rust + ONNX + Synthetic Odds)
 
