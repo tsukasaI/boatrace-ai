@@ -173,6 +173,89 @@ impl IndexedResultsData {
     }
 }
 
+/// Indexed race info with O(1) lookups for race_type
+pub struct IndexedRaceInfo {
+    /// race_type indexed by race key
+    race_types: HashMap<RaceKey, String>,
+}
+
+impl IndexedRaceInfo {
+    /// Load and index race info from programs_races.csv
+    pub fn load<P: AsRef<Path>>(csv_path: P) -> Result<Self, PolarsError> {
+        let df = CsvReadOptions::default()
+            .try_into_reader_with_file_path(Some(csv_path.as_ref().to_path_buf()))?
+            .finish()?;
+
+        let date_col = df.column("date")?.i64()?;
+        let stadium_col = df.column("stadium_code")?.i64()?;
+        let race_col = df.column("race_no")?.i64()?;
+        let race_type_col = df.column("race_type")?.str()?;
+
+        let mut race_types: HashMap<RaceKey, String> = HashMap::new();
+
+        for i in 0..df.height() {
+            if let (Some(date), Some(stadium), Some(race)) = (
+                date_col.get(i),
+                stadium_col.get(i),
+                race_col.get(i),
+            ) {
+                let race_type = race_type_col.get(i).unwrap_or("").to_string();
+                let key = (date as u32, stadium as u8, race as u8);
+                race_types.insert(key, race_type);
+            }
+        }
+
+        Ok(Self { race_types })
+    }
+
+    /// Get race_type for a race - O(1)
+    pub fn get_race_type(&self, date: u32, stadium_code: u8, race_no: u8) -> Option<&str> {
+        self.race_types.get(&(date, stadium_code, race_no)).map(|s| s.as_str())
+    }
+
+    /// Encode race_type to (race_grade, is_final)
+    /// Matches Python RACE_TYPE_ENCODING iteration order exactly
+    pub fn encode_race_context(&self, date: u32, stadium_code: u8, race_no: u8) -> (f64, f64) {
+        let race_type = self.get_race_type(date, stadium_code, race_no).unwrap_or("");
+
+        // race_grade encoding - must match Python dict iteration order:
+        // {"予選": 1, "一般": 1, "特選": 2, "選抜": 2, "準優": 3, "準優勝戦": 3, "優勝戦": 4, "優": 4}
+        // Python checks in order and returns first match
+        let race_grade = if race_type.contains("予選") {
+            1.0
+        } else if race_type.contains("一般") {
+            1.0
+        } else if race_type.contains("特選") {
+            2.0
+        } else if race_type.contains("選抜") {
+            2.0
+        } else if race_type.contains("準優") {
+            3.0 // Matches both "準優" and "準優勝戦"
+        } else if race_type.contains("優勝戦") {
+            4.0
+        } else if race_type.contains("優") {
+            4.0
+        } else {
+            1.0 // Default
+        };
+
+        // is_final: 1.0 if race_grade >= 3 (準優 or 優勝)
+        let is_final = if race_grade >= 3.0 { 1.0 } else { 0.0 };
+
+        (race_grade, is_final)
+    }
+
+    /// Total number of races
+    pub fn len(&self) -> usize {
+        self.race_types.len()
+    }
+
+    /// Check if empty
+    pub fn is_empty(&self) -> bool {
+        self.race_types.is_empty()
+    }
+}
+
 /// Backtest simulator configuration
 #[derive(Debug, Clone)]
 pub struct BacktestConfig {
@@ -215,7 +298,7 @@ enum UnifiedPredictor {
 impl UnifiedPredictor {
     #[allow(dead_code)]
     fn predict_positions(&mut self, entries: &[RacerEntry]) -> Vec<PositionProb> {
-        self.predict_positions_full(entries, None, None)
+        self.predict_positions_full(entries, None, None, None)
     }
 
     #[allow(dead_code)]
@@ -224,7 +307,7 @@ impl UnifiedPredictor {
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
     ) -> Vec<PositionProb> {
-        self.predict_positions_full(entries, historical, None)
+        self.predict_positions_full(entries, historical, None, None)
     }
 
     fn predict_positions_full(
@@ -232,10 +315,11 @@ impl UnifiedPredictor {
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
         exhibition_times: Option<[f64; 6]>,
+        race_context: Option<(f64, f64)>,
     ) -> Vec<PositionProb> {
         match self {
             UnifiedPredictor::Onnx(p) => {
-                p.predict_positions_full(entries, historical, exhibition_times)
+                p.predict_positions_full(entries, historical, exhibition_times, race_context)
                     .unwrap_or_else(|e| {
                         eprintln!("ONNX prediction failed: {}, using fallback", e);
                         FallbackPredictor::new().predict_positions(entries)
@@ -327,6 +411,27 @@ impl BacktestSimulator {
         let results_data = IndexedResultsData::load(&results_path)?;
         eprintln!("Loaded {} races from results", results_data.len());
 
+        // Load race info for race_type
+        let races_path = programs_path.as_ref().parent()
+            .map(|p| p.join("programs_races.csv"))
+            .unwrap_or_else(|| PathBuf::from("programs_races.csv"));
+        let race_info = if races_path.exists() {
+            eprintln!("Loading race info...");
+            match IndexedRaceInfo::load(&races_path) {
+                Ok(info) => {
+                    eprintln!("Loaded {} race info entries", info.len());
+                    Some(info)
+                }
+                Err(e) => {
+                    eprintln!("Failed to load race info: {}, using defaults", e);
+                    None
+                }
+            }
+        } else {
+            eprintln!("Race info file not found, using defaults");
+            None
+        };
+
         // Load racer history index for historical features
         eprintln!("Loading racer history...");
         let history_index = crate::data::RacerHistoryIndex::load(&results_path)?;
@@ -389,12 +494,23 @@ impl BacktestSimulator {
             // Get exhibition times from results data
             let exhibition_times = results_data.get_exhibition_times(*date, *stadium_code, *race_no);
 
-            // Run prediction with historical features and exhibition times
+            // Get race context (race_grade, is_final) from race info
+            // Only use real race context when using real odds (not synthetic)
+            // Synthetic odds don't reflect race context, causing EV mismatch
+            let race_context = if self.synthetic_odds.is_none() {
+                race_info.as_ref()
+                    .map(|info| info.encode_race_context(*date, *stadium_code, *race_no))
+            } else {
+                None // Use defaults (1.0, 0.0) for synthetic odds
+            };
+
+            // Run prediction with historical features, exhibition times, and race context
             let racer_entries: Vec<_> = entries.iter().map(|e| e.to_racer_entry()).collect();
             let position_probs = self.predictor.predict_positions_full(
                 &racer_entries,
                 Some(&historical_features),
                 exhibition_times,
+                race_context,
             );
             let exacta_probs = self.predictor.calculate_exacta_probs(&position_probs);
 

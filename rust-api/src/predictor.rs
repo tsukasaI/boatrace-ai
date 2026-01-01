@@ -59,7 +59,7 @@ impl Predictor {
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
     ) -> Result<Vec<PositionProb>, Box<dyn std::error::Error>> {
-        self.predict_positions_full(entries, historical, None)
+        self.predict_positions_full(entries, historical, None, None)
     }
 
     /// Predict position probabilities with all features
@@ -68,18 +68,20 @@ impl Predictor {
     /// * `entries` - 6 racer entries for the race
     /// * `historical` - Optional historical features for each racer (indexed by position)
     /// * `exhibition_times` - Optional exhibition times for each boat [boat1_time, ..., boat6_time]
+    /// * `race_context` - Optional (race_grade, is_final) tuple
     pub fn predict_positions_full(
         &mut self,
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
         exhibition_times: Option<[f64; 6]>,
+        race_context: Option<(f64, f64)>,
     ) -> Result<Vec<PositionProb>, Box<dyn std::error::Error>> {
         if entries.len() != 6 {
             return Err("Exactly 6 entries required".into());
         }
 
         // Create feature matrix (6 boats × 42 features)
-        let features = self.extract_features_full(entries, historical, exhibition_times);
+        let features = self.extract_features_full(entries, historical, exhibition_times, race_context);
 
         // Run inference for each position model
         let mut position_probs = vec![[0.0f64; 6]; 6]; // boats × positions
@@ -122,6 +124,7 @@ impl Predictor {
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
         exhibition_times: Option<[f64; 6]>,
+        race_context: Option<(f64, f64)>,
     ) -> Vec<f64> {
         let mut features = Vec::with_capacity(6 * NUM_FEATURES);
 
@@ -220,8 +223,7 @@ impl Predictor {
             features.push(exhibition_time_diff);
 
             // 5. Race context features (2)
-            let race_grade = 1.0; // Default to qualifying race
-            let is_final = 0.0;
+            let (race_grade, is_final) = race_context.unwrap_or((1.0, 0.0));
             features.push(race_grade);
             features.push(is_final);
 
@@ -297,7 +299,7 @@ impl Predictor {
     /// Extract features from race entries (proxy historical features)
     #[allow(dead_code)]
     fn extract_features(&self, entries: &[RacerEntry]) -> Vec<f64> {
-        self.extract_features_full(entries, None, None)
+        self.extract_features_full(entries, None, None, None)
     }
 
     /// Encode racer class to numeric value
