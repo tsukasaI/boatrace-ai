@@ -271,6 +271,9 @@ pub struct BacktestConfig {
     pub use_synthetic_odds: bool,
     /// Bet on highest probability combinations (instead of highest EV)
     pub bet_by_probability: bool,
+    /// Maximum odds to bet on (filters out longshots where model is unreliable)
+    /// Default: None (no limit for synthetic odds), 30.0 recommended for real odds
+    pub max_odds: Option<f64>,
 }
 
 impl Default for BacktestConfig {
@@ -285,6 +288,7 @@ impl Default for BacktestConfig {
             model_dir: None,
             use_synthetic_odds: false,
             bet_by_probability: false,
+            max_odds: None,
         }
     }
 }
@@ -524,9 +528,21 @@ impl BacktestSimulator {
                         (pred.first, pred.second, pred.probability, o, ev)
                     })
                 })
-                .filter(|(_, _, _, _, ev)| {
-                    // When betting by probability, don't filter by EV
-                    self.config.bet_by_probability || *ev > self.config.ev_threshold
+                .filter(|(_, _, prob, odds, ev)| {
+                    // Apply max_odds filter if configured
+                    let max_odds = self.config.max_odds.unwrap_or(f64::MAX);
+                    if *odds > max_odds {
+                        return false;
+                    }
+
+                    if self.config.bet_by_probability {
+                        // When betting by probability, skip extreme longshots
+                        // Model is unreliable for very low probabilities
+                        *prob >= 0.01
+                    } else {
+                        // EV strategy: require EV > threshold
+                        *ev > self.config.ev_threshold
+                    }
                 })
                 .collect();
 
@@ -601,6 +617,14 @@ impl BacktestSimulator {
         println!("EV Threshold: {:.2}", self.config.ev_threshold);
         println!("Stake per bet: {}", self.config.stake);
         println!("Max bets per race: {}", self.config.max_bets_per_race);
+        if self.config.bet_by_probability {
+            println!("Strategy: bet by PROBABILITY (top-N)");
+        } else {
+            println!("Strategy: bet by EV (EV > threshold)");
+        }
+        if let Some(max_odds) = self.config.max_odds {
+            println!("Max odds: {:.1}", max_odds);
+        }
         println!("{}", "-".repeat(60));
         println!("Total races: {}", result.total_races);
         println!("Races with bets: {}", result.races_with_bets);
@@ -621,6 +645,42 @@ impl BacktestSimulator {
             println!("Average EV: {:.2}", metrics.avg_ev);
             println!("Profit factor: {:.2}", metrics.profit_factor);
             println!("Max drawdown: {}", metrics.max_drawdown);
+        }
+
+        // Bet distribution analysis
+        if !result.bets.is_empty() {
+            println!("{}", "-".repeat(60));
+            println!("BET DISTRIBUTION:");
+
+            // Group by odds ranges
+            let mut odds_bins: [(usize, usize, i64, i64); 5] = [(0, 0, 0, 0); 5]; // count, wins, stake, profit
+            for bet in &result.bets {
+                let bin = if bet.odds < 10.0 { 0 }
+                    else if bet.odds < 30.0 { 1 }
+                    else if bet.odds < 100.0 { 2 }
+                    else if bet.odds < 300.0 { 3 }
+                    else { 4 };
+                odds_bins[bin].0 += 1;
+                if bet.won { odds_bins[bin].1 += 1; }
+                odds_bins[bin].2 += bet.stake;
+                odds_bins[bin].3 += bet.profit;
+            }
+
+            let labels = ["<10", "10-30", "30-100", "100-300", ">300"];
+            for (i, label) in labels.iter().enumerate() {
+                let (count, wins, stake, profit) = odds_bins[i];
+                if count > 0 {
+                    let roi = if stake > 0 { profit as f64 / stake as f64 * 100.0 } else { 0.0 };
+                    println!("  Odds {}: {} bets, {} wins ({:.1}%), ROI: {:+.1}%",
+                        label, count, wins, wins as f64 / count as f64 * 100.0, roi);
+                }
+            }
+
+            // Average probability and odds
+            let avg_prob: f64 = result.bets.iter().map(|b| b.probability).sum::<f64>() / result.bets.len() as f64;
+            let avg_odds: f64 = result.bets.iter().map(|b| b.odds).sum::<f64>() / result.bets.len() as f64;
+            println!("\n  Avg probability: {:.2}%", avg_prob * 100.0);
+            println!("  Avg odds: {:.1}", avg_odds);
         }
 
         println!("{}", "=".repeat(60));

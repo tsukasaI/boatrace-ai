@@ -119,6 +119,10 @@ enum Commands {
         /// Bet on highest probability combinations (instead of highest EV)
         #[arg(long)]
         by_prob: bool,
+
+        /// Maximum odds to bet on (filters out longshots where model is unreliable)
+        #[arg(long)]
+        max_odds: Option<f64>,
     },
 
     /// Scrape odds from boatrace.jp (requires scraper feature)
@@ -258,6 +262,7 @@ fn main() -> Result<()> {
                 model_dir,
                 synthetic_odds,
                 by_prob,
+                max_odds,
             } => {
                 run_backtest(
                     &cli.data_dir,
@@ -273,6 +278,7 @@ fn main() -> Result<()> {
                     model_dir,
                     synthetic_odds,
                     by_prob,
+                    max_odds,
                 )?;
             }
             #[cfg(feature = "scraper")]
@@ -728,6 +734,7 @@ fn run_backtest(
     model_dir: Option<PathBuf>,
     synthetic_odds: bool,
     by_prob: bool,
+    max_odds: Option<f64>,
 ) -> Result<()> {
     println!("{}", "Running backtest...".green());
 
@@ -741,6 +748,7 @@ fn run_backtest(
         model_dir: model_dir.clone(),
         use_synthetic_odds: synthetic_odds,
         bet_by_probability: by_prob,
+        max_odds,
     };
 
     if by_prob {
@@ -760,6 +768,9 @@ fn run_backtest(
     }
     if synthetic_odds {
         println!("Synthetic odds: enabled");
+    }
+    if let Some(mo) = max_odds {
+        println!("Max odds: {:.1}", mo);
     }
     println!();
 
@@ -1608,7 +1619,7 @@ fn run_interactive(data_dir: &Path, odds_dir: &Path) -> Result<()> {
                     .interact_text()?;
 
                 println!();
-                run_backtest(data_dir, odds_dir, threshold, 100, 3, Some(20240701), None, false, false)?;
+                run_backtest(data_dir, odds_dir, threshold, 100, 3, Some(20240701), None, false, false, None)?;
                 println!();
             }
             3 => {
