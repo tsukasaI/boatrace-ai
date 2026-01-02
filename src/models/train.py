@@ -46,8 +46,8 @@ class BoatracePredictor:
     def _default_params(self) -> dict:
         """Default LightGBM parameters"""
         return {
-            "objective": "regression",
-            "metric": "rmse",
+            "objective": "binary",  # Binary classification for each position
+            "metric": "binary_logloss",  # Log loss for probability calibration
             "boosting_type": "gbdt",
             "num_leaves": 31,
             "learning_rate": 0.05,
@@ -237,8 +237,8 @@ def optimize_hyperparameters(
     """
     def objective(trial):
         params = {
-            "objective": "regression",
-            "metric": "rmse",
+            "objective": "binary",  # Binary classification
+            "metric": "binary_logloss",  # Log loss for probability calibration
             "boosting_type": "gbdt",
             "num_leaves": trial.suggest_int("num_leaves", 15, 63),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.1, log=True),
@@ -262,11 +262,15 @@ def optimize_hyperparameters(
             callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)],
         )
 
-        # Prediction on validation data
+        # Prediction on validation data - use log loss for binary classification
         y_pred = model.predict(X_val)
-        rmse = np.sqrt(np.mean((y_pred - y_val[:, 0]) ** 2))
+        # Binary log loss: -mean(y * log(p) + (1-y) * log(1-p))
+        eps = 1e-15
+        y_pred = np.clip(y_pred, eps, 1 - eps)
+        y_true = y_val[:, 0]
+        logloss = -np.mean(y_true * np.log(y_pred) + (1 - y_true) * np.log(1 - y_pred))
 
-        return rmse
+        return logloss
 
     study = optuna.create_study(direction="minimize")
     study.optimize(objective, n_trials=n_trials, show_progress_bar=True)

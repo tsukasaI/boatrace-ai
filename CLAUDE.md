@@ -305,27 +305,24 @@ The model exhibits probability overestimation for high-odds (longshot) combinati
 - Use `--by-prob` for probability-based betting (+42.4% ROI)
 - Use `--max-odds 30` to filter extreme longshots (+35.8% ROI)
 
-### Regression vs Classification Mismatch
+### ~~Regression vs Classification Mismatch~~ (Fixed)
 
-Current training uses MSE regression (`objective: "regression"`) but position prediction is fundamentally a classification/ranking problem. This contributes to poor probability calibration.
+~~Current training uses MSE regression (`objective: "regression"`) but position prediction is fundamentally a classification/ranking problem.~~ **Fixed**: Now uses `objective: "binary"` with `metric: "binary_logloss"` for proper probability optimization.
 
-### Probability Calibration Gap
+### ~~Probability Calibration Gap~~ (Fixed)
 
-Platt scaling calibrators are trained in Python but NOT exported to ONNX:
-- Python models have calibration
-- Rust inference uses raw softmax (no calibration)
-- This causes probability estimates to be uncalibrated in production
+~~Platt scaling calibrators are trained in Python but NOT exported to ONNX.~~ **Fixed**: Calibrator coefficients are now exported to `metadata.json` and applied in Rust inference before softmax normalization.
 
 ## Future Improvements
 
 ### High Priority (ROI Impact)
 
-| ID | Improvement | File | Impact |
-|----|-------------|------|--------|
-| H1 | Change objective from `regression` to `cross_entropy` | train.py:49 | Better probability estimates |
-| H2 | Export Platt scaling to ONNX metadata | export_onnx.py | Calibrated predictions in Rust |
-| H3 | Joint position model (Plackett-Luce) | train.py | Enforce one-boat-per-position |
-| H4 | Add weather features | features.py, parser.py | Weather significantly affects outcomes |
+| ID | Improvement | File | Impact | Status |
+|----|-------------|------|--------|--------|
+| H1 | Change objective from `regression` to `binary` | train.py:49 | Better probability estimates | ✅ Done |
+| H2 | Export Platt scaling to ONNX metadata | export_onnx.py | Calibrated predictions in Rust | ✅ Done |
+| H3 | Joint position model (Plackett-Luce) | train.py | Enforce one-boat-per-position | |
+| H4 | Add weather features | features.py, parser.py | Weather significantly affects outcomes | |
 
 ### Medium Priority (Quality of Life)
 
