@@ -292,6 +292,213 @@ boat backtest --all-data --model-dir ../models/onnx --max-odds 30
 | Hit rate | 0.7% |
 | Profit factor | 1.01 |
 
+## Known Issues & Limitations
+
+### Favorite-Longshot Bias
+
+The model exhibits probability overestimation for high-odds (longshot) combinations:
+- Real market odds already incorporate efficient pricing
+- EV > 1.0 bets tend to be on extreme longshots that rarely win
+- This is why EV strategy fails with real odds (-96.4% ROI)
+
+**Workarounds:**
+- Use `--by-prob` for probability-based betting (+42.4% ROI)
+- Use `--max-odds 30` to filter extreme longshots (+35.8% ROI)
+
+### Regression vs Classification Mismatch
+
+Current training uses MSE regression (`objective: "regression"`) but position prediction is fundamentally a classification/ranking problem. This contributes to poor probability calibration.
+
+### Probability Calibration Gap
+
+Platt scaling calibrators are trained in Python but NOT exported to ONNX:
+- Python models have calibration
+- Rust inference uses raw softmax (no calibration)
+- This causes probability estimates to be uncalibrated in production
+
+## Future Improvements
+
+### High Priority (ROI Impact)
+
+| ID | Improvement | File | Impact |
+|----|-------------|------|--------|
+| H1 | Change objective from `regression` to `cross_entropy` | train.py:49 | Better probability estimates |
+| H2 | Export Platt scaling to ONNX metadata | export_onnx.py | Calibrated predictions in Rust |
+| H3 | Joint position model (Plackett-Luce) | train.py | Enforce one-boat-per-position |
+| H4 | Add weather features | features.py, parser.py | Weather significantly affects outcomes |
+
+### Medium Priority (Quality of Life)
+
+| ID | Improvement | Impact |
+|----|-------------|--------|
+| M1 | Add `--output-format json\|csv` | Enable automation |
+| M2 | Add date validation | Prevent invalid date errors |
+| M3 | Per-stadium course advantage | Stadium-specific predictions |
+| M4 | Use `tabled` crate | Better table formatting |
+| M5 | TOML config file | Persistent settings |
+
+### Low Priority
+
+| ID | Improvement |
+|----|-------------|
+| L1 | Expand interactive mode |
+| L2 | ASCII charts for trends |
+| L3 | Terminal width detection |
+
+## Troubleshooting
+
+### Common Issues
+
+**"No entries found for this race"**
+- Check data directory path (`--data-dir`)
+- Verify CSV files exist in data/processed/
+
+**ONNX model loading fails**
+- Ensure models exist in models/onnx/
+- Run `uv run python src/models/export_onnx.py --verify`
+
+**Backtest shows -96% ROI with EV strategy**
+- This is expected with real odds (favorite-longshot bias)
+- Use `--by-prob` or `--max-odds 30` instead
+
+**Scraping fails**
+- Check network connectivity
+- Respect 2+ second request interval
+- boatrace.jp may be temporarily unavailable
+
+**Feature mismatch error**
+- Ensure Python and Rust feature counts match (43 features)
+- Re-export ONNX after training: `uv run python src/models/export_onnx.py --verify`
+
+## API Reference
+
+### Start Server
+```bash
+cargo run --features api
+```
+
+### Endpoints
+
+**POST /api/predict**
+```bash
+curl -X POST http://localhost:8080/api/predict \
+  -H "Content-Type: application/json" \
+  -d '{"date": 20240115, "stadium": 23, "race": 1}'
+```
+
+**Response**
+```json
+{
+  "predictions": [
+    {"boat_no": 1, "win_prob": 0.45, "in2_prob": 0.62},
+    {"boat_no": 2, "win_prob": 0.18, "in2_prob": 0.35}
+  ],
+  "exacta": [
+    {"combination": "1-2", "probability": 0.18, "ev": 1.24}
+  ]
+}
+```
+
+## Development Guide
+
+### Architecture
+
+**Data Flow:**
+1. Raw TXT (CP932) → Python parser → CSV
+2. CSV → Rust loader → Feature extraction (43 features)
+3. Features → ONNX model → Position probabilities
+4. Probabilities + Odds → Expected Value → Betting decision
+
+**Feature Categories (43 total):**
+- Stadium code (1)
+- Base features (10): national/local win rates, age, weight, class, branch, motor/boat rates
+- Historical features (16): recent performance, course-specific stats, start timing
+- Relative features (5): rankings within race
+- Exhibition features (3): time, rank, diff from average
+- Context features (2): race_grade, is_final
+- Interaction features (6): class×course, motor×exhibition, equipment scores
+
+### Adding New Features
+
+1. Add extraction in `src/models/features.py`
+2. Update `get_feature_columns()` list
+3. Retrain: `uv run python src/models/train.py --historical`
+4. Export: `uv run python src/models/export_onnx.py --verify`
+5. Update Rust `predictor.rs`:
+   - Update `NUM_FEATURES` constant
+   - Add feature extraction in `extract_features_full()`
+
+### Testing
+
+```bash
+# Python tests
+uv run pytest tests/
+
+# Rust tests
+cd rust-api && cargo test
+
+# Verify feature parity
+uv run python scripts/compare_features.py
+```
+
+## Data Format Specification
+
+### Raw Data Format
+- **Encoding**: CP932 (Shift-JIS)
+- **Format**: Fixed-width text
+- **Programs**: B*.TXT files (race entries)
+- **Results**: K*.TXT files (race outcomes)
+
+### Processed CSV Schema
+
+**programs.csv**
+| Column | Type | Description |
+|--------|------|-------------|
+| date | int | YYYYMMDD format |
+| stadium_code | int | 1-24 (see Stadium Codes) |
+| race_no | int | 1-12 |
+| boat_no | int | 1-6 (lane number) |
+| racer_id | int | 4-digit racer ID |
+| racer_name | str | Racer name (Japanese) |
+| racer_class | str | A1/A2/B1/B2 |
+| national_win_rate | float | Win rate (%) |
+| national_in2_rate | float | Top-2 rate (%) |
+| local_win_rate | float | Stadium-specific win rate |
+| local_in2_rate | float | Stadium-specific top-2 rate |
+| motor_no | int | Motor number |
+| motor_in2_rate | float | Motor top-2 rate (%) |
+| boat_in2_rate | float | Boat top-2 rate (%) |
+
+**results.csv**
+| Column | Type | Description |
+|--------|------|-------------|
+| date | int | YYYYMMDD |
+| stadium_code | int | 1-24 |
+| race_no | int | 1-12 |
+| boat_no | int | 1-6 |
+| rank | int | Finishing position (1-6) |
+| course | int | Actual start course |
+| start_timing | float | Start timing (seconds) |
+
+### Odds JSON Schema
+
+```json
+{
+  "date": 20240115,
+  "stadium": 23,
+  "race": 1,
+  "exacta": {
+    "1-2": 5.6,
+    "1-3": 12.4,
+    "2-1": 8.2
+  },
+  "trifecta": {
+    "1-2-3": 15.2,
+    "1-2-4": 28.5
+  }
+}
+```
+
 ## References
 
 - Official data: https://www.boatrace.jp/owpc/pc/extra/data/download.html
