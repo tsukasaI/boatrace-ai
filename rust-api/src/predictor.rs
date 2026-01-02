@@ -3,6 +3,7 @@ use ort::{
     session::{builder::GraphOptimizationLevel, Session},
     value::Tensor,
 };
+use serde::Deserialize;
 use std::path::Path;
 use tracing::info;
 
@@ -12,9 +13,28 @@ const NUM_MODELS: usize = 6;
 /// Stadium (1) + Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) = 43
 const NUM_FEATURES: usize = 43;
 
+/// Platt scaling calibrator coefficients
+#[derive(Debug, Clone, Deserialize)]
+pub struct Calibrator {
+    pub position: usize,
+    pub coef: f64,
+    pub intercept: f64,
+}
+
+/// Model metadata including calibrators
+#[derive(Debug, Deserialize)]
+struct ModelMetadata {
+    #[allow(dead_code)]
+    n_models: usize,
+    #[allow(dead_code)]
+    n_features: usize,
+    calibrators: Option<Vec<Calibrator>>,
+}
+
 /// ONNX-based predictor for boat race outcomes
 pub struct Predictor {
     sessions: Vec<Session>,
+    calibrators: Option<Vec<Calibrator>>,
 }
 
 impl Predictor {
@@ -34,8 +54,43 @@ impl Predictor {
             sessions.push(session);
         }
 
+        // Load calibrators from metadata.json if available
+        let metadata_path = model_dir.join("metadata.json");
+        let calibrators = if metadata_path.exists() {
+            match std::fs::read_to_string(&metadata_path) {
+                Ok(content) => match serde_json::from_str::<ModelMetadata>(&content) {
+                    Ok(metadata) => {
+                        if let Some(ref cals) = metadata.calibrators {
+                            info!("Loaded {} Platt scaling calibrators", cals.len());
+                            for cal in cals {
+                                info!(
+                                    "  Position {}: coef={:.4}, intercept={:.4}",
+                                    cal.position, cal.coef, cal.intercept
+                                );
+                            }
+                        }
+                        metadata.calibrators
+                    }
+                    Err(e) => {
+                        info!("Could not parse metadata.json: {}", e);
+                        None
+                    }
+                },
+                Err(e) => {
+                    info!("Could not read metadata.json: {}", e);
+                    None
+                }
+            }
+        } else {
+            info!("No metadata.json found - predictions will be uncalibrated");
+            None
+        };
+
         info!("Loaded {} ONNX models", sessions.len());
-        Ok(Self { sessions })
+        Ok(Self {
+            sessions,
+            calibrators,
+        })
     }
 
     /// Predict position probabilities for each boat
@@ -88,6 +143,9 @@ impl Predictor {
         // Run inference for each position model
         let mut position_probs = vec![[0.0f64; 6]; 6]; // boats × positions
 
+        // Clone calibrators to avoid borrow issues
+        let calibrators = self.calibrators.clone();
+
         for (pos_idx, session) in self.sessions.iter_mut().enumerate() {
             let input_vec: Vec<f32> = features.iter().map(|&x| x as f32).collect();
             let input_tensor = Tensor::from_array(([6usize, NUM_FEATURES], input_vec))?;
@@ -99,7 +157,10 @@ impl Predictor {
 
             for (boat_idx, value) in output_data.iter().enumerate() {
                 if boat_idx < 6 {
-                    position_probs[boat_idx][pos_idx] = *value as f64;
+                    let raw_pred = *value as f64;
+                    // Apply Platt scaling calibration if available
+                    let calibrated = Self::apply_platt_scaling_static(&calibrators, raw_pred, pos_idx);
+                    position_probs[boat_idx][pos_idx] = calibrated;
                 }
             }
         }
@@ -357,6 +418,28 @@ impl Predictor {
             6 => 0.03,
             _ => 0.10,
         }
+    }
+
+    /// Apply Platt scaling calibration to raw prediction
+    ///
+    /// Platt scaling transforms raw model output using logistic regression:
+    /// P(y=1|f) = 1 / (1 + exp(-(coef * f + intercept)))
+    ///
+    /// This improves probability calibration, especially for extreme values.
+    fn apply_platt_scaling_static(
+        calibrators: &Option<Vec<Calibrator>>,
+        raw_pred: f64,
+        position_idx: usize,
+    ) -> f64 {
+        if let Some(ref cals) = calibrators {
+            if let Some(cal) = cals.get(position_idx) {
+                // Logistic function: 1 / (1 + exp(-(coef * x + intercept)))
+                let logit = cal.coef * raw_pred + cal.intercept;
+                return 1.0 / (1.0 + (-logit).exp());
+            }
+        }
+        // No calibration available - return raw prediction (clipped to 0-1)
+        raw_pred.clamp(0.0, 1.0)
     }
 
     /// Apply softmax normalization across positions for each boat,

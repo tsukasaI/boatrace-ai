@@ -98,6 +98,25 @@ def export_to_onnx(
         "feature_names": predictor.feature_names,
         "model_files": [f"position_{i + 1}.onnx" for i in range(len(predictor.models))],
     }
+
+    # Export Platt scaling calibrators if available
+    if predictor.calibrators is not None:
+        calibrators_data = []
+        for i, cal in enumerate(predictor.calibrators):
+            # LogisticRegression stores coef_ as 2D array [[coef]] and intercept_ as 1D [intercept]
+            coef = float(cal.coef_[0, 0])
+            intercept = float(cal.intercept_[0])
+            calibrators_data.append({
+                "position": i + 1,
+                "coef": coef,
+                "intercept": intercept,
+            })
+            logger.info(f"  Position {i + 1} calibrator: coef={coef:.4f}, intercept={intercept:.4f}")
+        metadata["calibrators"] = calibrators_data
+        logger.info(f"Exported {len(calibrators_data)} Platt scaling calibrators")
+    else:
+        logger.warning("No calibrators found in model - predictions will be uncalibrated")
+
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
     logger.info(f"Saved metadata to {metadata_path}")
