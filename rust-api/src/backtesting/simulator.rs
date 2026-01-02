@@ -302,7 +302,7 @@ enum UnifiedPredictor {
 impl UnifiedPredictor {
     #[allow(dead_code)]
     fn predict_positions(&mut self, entries: &[RacerEntry]) -> Vec<PositionProb> {
-        self.predict_positions_full(entries, None, None, None)
+        self.predict_positions_full(entries, None, None, None, None)
     }
 
     #[allow(dead_code)]
@@ -311,7 +311,7 @@ impl UnifiedPredictor {
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
     ) -> Vec<PositionProb> {
-        self.predict_positions_full(entries, historical, None, None)
+        self.predict_positions_full(entries, historical, None, None, None)
     }
 
     fn predict_positions_full(
@@ -320,10 +320,11 @@ impl UnifiedPredictor {
         historical: Option<&[crate::data::HistoricalFeatures]>,
         exhibition_times: Option<[f64; 6]>,
         race_context: Option<(f64, f64)>,
+        stadium_code: Option<u8>,
     ) -> Vec<PositionProb> {
         match self {
             UnifiedPredictor::Onnx(p) => {
-                p.predict_positions_full(entries, historical, exhibition_times, race_context)
+                p.predict_positions_full(entries, historical, exhibition_times, race_context, stadium_code)
                     .unwrap_or_else(|e| {
                         eprintln!("ONNX prediction failed: {}, using fallback", e);
                         FallbackPredictor::new().predict_positions(entries)
@@ -508,13 +509,14 @@ impl BacktestSimulator {
                 None // Use defaults (1.0, 0.0) for synthetic odds
             };
 
-            // Run prediction with historical features, exhibition times, and race context
+            // Run prediction with historical features, exhibition times, race context, and stadium
             let racer_entries: Vec<_> = entries.iter().map(|e| e.to_racer_entry()).collect();
             let position_probs = self.predictor.predict_positions_full(
                 &racer_entries,
                 Some(&historical_features),
                 exhibition_times,
                 race_context,
+                Some(*stadium_code),
             );
             let exacta_probs = self.predictor.calculate_exacta_probs(&position_probs);
 

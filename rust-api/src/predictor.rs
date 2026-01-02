@@ -9,8 +9,8 @@ use tracing::info;
 /// Number of position models (one per finishing position 1-6)
 const NUM_MODELS: usize = 6;
 /// Number of features expected by the model
-/// Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) = 42
-const NUM_FEATURES: usize = 42;
+/// Stadium (1) + Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) = 43
+const NUM_FEATURES: usize = 43;
 
 /// ONNX-based predictor for boat race outcomes
 pub struct Predictor {
@@ -59,7 +59,7 @@ impl Predictor {
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
     ) -> Result<Vec<PositionProb>, Box<dyn std::error::Error>> {
-        self.predict_positions_full(entries, historical, None, None)
+        self.predict_positions_full(entries, historical, None, None, None)
     }
 
     /// Predict position probabilities with all features
@@ -69,19 +69,21 @@ impl Predictor {
     /// * `historical` - Optional historical features for each racer (indexed by position)
     /// * `exhibition_times` - Optional exhibition times for each boat [boat1_time, ..., boat6_time]
     /// * `race_context` - Optional (race_grade, is_final) tuple
+    /// * `stadium_code` - Optional stadium code (1-24) for stadium-specific effects
     pub fn predict_positions_full(
         &mut self,
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
         exhibition_times: Option<[f64; 6]>,
         race_context: Option<(f64, f64)>,
+        stadium_code: Option<u8>,
     ) -> Result<Vec<PositionProb>, Box<dyn std::error::Error>> {
         if entries.len() != 6 {
             return Err("Exactly 6 entries required".into());
         }
 
-        // Create feature matrix (6 boats × 42 features)
-        let features = self.extract_features_full(entries, historical, exhibition_times, race_context);
+        // Create feature matrix (6 boats × 43 features)
+        let features = self.extract_features_full(entries, historical, exhibition_times, race_context, stadium_code);
 
         // Run inference for each position model
         let mut position_probs = vec![[0.0f64; 6]; 6]; // boats × positions
@@ -118,13 +120,14 @@ impl Predictor {
 
     /// Extract features from race entries with optional real historical features and exhibition times
     ///
-    /// Order: Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) = 42 features per boat
+    /// Order: Stadium (1) + Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) = 43 features per boat
     fn extract_features_full(
         &self,
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
         exhibition_times: Option<[f64; 6]>,
         race_context: Option<(f64, f64)>,
+        stadium_code: Option<u8>,
     ) -> Vec<f64> {
         let mut features = Vec::with_capacity(6 * NUM_FEATURES);
 
@@ -160,6 +163,9 @@ impl Predictor {
         for (i, entry) in entries.iter().enumerate() {
             let class_encoded = Self::encode_class(&entry.racer_class);
             let branch_encoded = Self::encode_branch(&entry.branch);
+
+            // 0. Stadium code (1) - for stadium-specific effects
+            features.push(stadium_code.unwrap_or(12) as f64); // Default to Suminoe (12)
 
             // 1. Base features (10)
             features.push(entry.national_win_rate);
@@ -299,7 +305,7 @@ impl Predictor {
     /// Extract features from race entries (proxy historical features)
     #[allow(dead_code)]
     fn extract_features(&self, entries: &[RacerEntry]) -> Vec<f64> {
-        self.extract_features_full(entries, None, None, None)
+        self.extract_features_full(entries, None, None, None, None)
     }
 
     /// Encode racer class to numeric value

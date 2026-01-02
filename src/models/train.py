@@ -2,6 +2,7 @@
 Model Training
 
 Train finishing position prediction model using LightGBM
+with optional Platt scaling calibration for probability estimates
 """
 
 import sys
@@ -12,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import lightgbm as lgb
 import optuna
+from sklearn.linear_model import LogisticRegression
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import PROJECT_ROOT
@@ -29,7 +31,7 @@ MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class BoatracePredictor:
-    """Boat race prediction model"""
+    """Boat race prediction model with optional Platt scaling calibration"""
 
     def __init__(self, params: dict = None):
         """
@@ -39,6 +41,7 @@ class BoatracePredictor:
         self.params = params or self._default_params()
         self.models = None
         self.feature_names = None
+        self.calibrators = None  # Platt scaling models for each position
 
     def _default_params(self) -> dict:
         """Default LightGBM parameters"""
@@ -110,12 +113,52 @@ class BoatracePredictor:
 
         logger.info("Training completed!")
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
+    def calibrate(
+        self,
+        X_cal: np.ndarray,
+        y_cal: np.ndarray,
+    ) -> None:
+        """
+        Calibrate model predictions using Platt scaling
+
+        Platt scaling fits a logistic regression to transform raw predictions
+        into well-calibrated probabilities. This helps fix overconfidence
+        issues, especially for extreme probabilities.
+
+        Args:
+            X_cal: Calibration features (n_samples, n_features)
+            y_cal: Calibration labels (n_samples, 6) - binary for each position
+        """
+        if self.models is None:
+            raise ValueError("Model not trained. Call train() first.")
+
+        logger.info("Calibrating model with Platt scaling...")
+
+        self.calibrators = []
+
+        for pos, model in enumerate(self.models):
+            # Get raw predictions
+            raw_preds = model.predict(X_cal)
+
+            # Fit Platt scaling (logistic regression on raw predictions)
+            # Binary target: 1 if racer finished in this position, 0 otherwise
+            y_binary = y_cal[:, pos]
+
+            calibrator = LogisticRegression(solver='lbfgs', max_iter=1000)
+            calibrator.fit(raw_preds.reshape(-1, 1), (y_binary > 0.5).astype(int))
+
+            self.calibrators.append(calibrator)
+            logger.info(f"  Position {pos + 1}: calibrated")
+
+        logger.info("Calibration completed!")
+
+    def predict(self, X: np.ndarray, use_calibration: bool = True) -> np.ndarray:
         """
         Predict finishing position probabilities
 
         Args:
             X: Features (n_samples, n_features)
+            use_calibration: Whether to apply Platt scaling calibration
 
         Returns:
             Probabilities (n_samples, 6) - predicted probability for each position
@@ -126,7 +169,17 @@ class BoatracePredictor:
         predictions = np.zeros((X.shape[0], 6))
 
         for pos, model in enumerate(self.models):
-            predictions[:, pos] = model.predict(X)
+            raw_pred = model.predict(X)
+
+            # Apply Platt scaling if available and requested
+            if use_calibration and self.calibrators is not None:
+                calibrator = self.calibrators[pos]
+                # Get calibrated probability (probability of class 1)
+                predictions[:, pos] = calibrator.predict_proba(
+                    raw_pred.reshape(-1, 1)
+                )[:, 1]
+            else:
+                predictions[:, pos] = raw_pred
 
         # Convert to probability (normalize to 0-1)
         predictions = np.clip(predictions, 0, 1)
@@ -146,6 +199,7 @@ class BoatracePredictor:
                 "models": self.models,
                 "params": self.params,
                 "feature_names": self.feature_names,
+                "calibrators": self.calibrators,
             }, f)
         logger.info(f"Model saved to {path}")
 
@@ -157,6 +211,7 @@ class BoatracePredictor:
             self.models = data["models"]
             self.params = data["params"]
             self.feature_names = data["feature_names"]
+            self.calibrators = data.get("calibrators")  # May not exist in old models
         logger.info(f"Model loaded from {path}")
 
 
@@ -226,6 +281,7 @@ def train_model(
     use_historical: bool = False,
     optimize: bool = False,
     n_trials: int = 50,
+    calibrate: bool = True,
 ) -> BoatracePredictor:
     """
     Main function to train the model
@@ -234,6 +290,7 @@ def train_model(
         use_historical: Whether to use historical features
         optimize: Whether to perform hyperparameter optimization
         n_trials: Number of optimization trials
+        calibrate: Whether to apply Platt scaling calibration
 
     Returns:
         Trained model
@@ -266,6 +323,10 @@ def train_model(
     model = BoatracePredictor(params=params)
     model.train(X_train, y_train, X_val, y_val, feature_names)
 
+    # Platt scaling calibration using validation set
+    if calibrate:
+        model.calibrate(X_val, y_val)
+
     # Save
     model.save()
 
@@ -280,12 +341,14 @@ def main():
     parser.add_argument("--historical", action="store_true", help="Use historical features")
     parser.add_argument("--optimize", action="store_true", help="Optimize hyperparameters")
     parser.add_argument("--n-trials", type=int, default=50, help="Number of optimization trials")
+    parser.add_argument("--no-calibrate", action="store_true", help="Skip Platt scaling calibration")
     args = parser.parse_args()
 
     train_model(
         use_historical=args.historical,
         optimize=args.optimize,
         n_trials=args.n_trials,
+        calibrate=not args.no_calibrate,
     )
 
 

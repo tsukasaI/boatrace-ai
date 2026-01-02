@@ -377,6 +377,7 @@ def get_feature_columns() -> list[str]:
     """List of feature column names to input to the model"""
     return [
         # Base features
+        "stadium_code",  # Stadium-specific effects
         "national_win_rate", "national_in2_rate",
         "local_win_rate", "local_in2_rate",
         "age", "weight", "class_encoded", "branch_encoded",

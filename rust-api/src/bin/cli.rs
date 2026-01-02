@@ -805,7 +805,7 @@ fn run_backtest(
             "Stadium", "Bets", "Wins", "Hit Rate", "Profit", "ROI"
         );
         println!("{}", "-".repeat(60));
-        for a in stadium_analysis.iter().take(10) {
+        for a in stadium_analysis.iter() {
             println!(
                 "{:>8} {:>8} {:>8} {:>9.1}% {:>12} {:>9.1}%",
                 stadium_name(a.key.parse().unwrap_or(0)),
