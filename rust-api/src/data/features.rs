@@ -503,8 +503,9 @@ pub fn get_base_feature_names() -> Vec<&'static str> {
     ]
 }
 
-/// Get all feature column names including historical (42 features)
-/// Order: Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6)
+/// Get all feature column names including historical (49 features, 50 with stadium_code)
+/// Order: Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) + Weather (7)
+/// Note: stadium_code is added by predictor.rs as the first feature during inference
 pub fn get_all_feature_names() -> Vec<&'static str> {
     vec![
         // Base features (10)
@@ -555,6 +556,14 @@ pub fn get_all_feature_names() -> Vec<&'static str> {
         "equipment_rank",
         "favorite_score",
         "upset_potential",
+        // Weather features (7)
+        "weather_encoded",
+        "wind_speed",
+        "wave_height",
+        "wind_direction_sin",
+        "wind_direction_cos",
+        "wind_wave_interaction",
+        "inside_wave_penalty",
     ]
 }
 

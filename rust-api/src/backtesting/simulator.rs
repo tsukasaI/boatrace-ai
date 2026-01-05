@@ -173,6 +173,66 @@ impl IndexedResultsData {
     }
 }
 
+/// Indexed weather data with O(1) lookups
+pub struct IndexedWeatherData {
+    /// Weather data indexed by race key: (weather, wind_direction, wind_speed, wave_height)
+    weather: HashMap<RaceKey, (String, String, f64, f64)>,
+}
+
+impl IndexedWeatherData {
+    /// Load and index weather data from results_races.csv
+    pub fn load<P: AsRef<Path>>(csv_path: P) -> Result<Self, PolarsError> {
+        let df = CsvReadOptions::default()
+            .try_into_reader_with_file_path(Some(csv_path.as_ref().to_path_buf()))?
+            .finish()?;
+
+        let date_col = df.column("date")?.i64()?;
+        let stadium_col = df.column("stadium_code")?.i64()?;
+        let race_col = df.column("race_no")?.i64()?;
+        let weather_col = df.column("weather")?.str()?;
+        let wind_dir_col = df.column("wind_direction")?.str()?;
+        let wind_speed_col = df.column("wind_speed")?.i64()?;
+        let wave_height_col = df.column("wave_height")?.i64()?;
+
+        let mut weather_map: HashMap<RaceKey, (String, String, f64, f64)> = HashMap::new();
+
+        for i in 0..df.height() {
+            if let (Some(date), Some(stadium), Some(race)) = (
+                date_col.get(i),
+                stadium_col.get(i),
+                race_col.get(i),
+            ) {
+                let weather = weather_col.get(i).unwrap_or("").to_string();
+                let wind_dir = wind_dir_col.get(i).unwrap_or("").to_string();
+                let wind_speed = wind_speed_col.get(i).unwrap_or(0) as f64;
+                let wave_height = wave_height_col.get(i).unwrap_or(0) as f64;
+
+                let key = (date as u32, stadium as u8, race as u8);
+                weather_map.insert(key, (weather, wind_dir, wind_speed, wave_height));
+            }
+        }
+
+        Ok(Self { weather: weather_map })
+    }
+
+    /// Get weather features for a race - O(1)
+    pub fn get_weather(&self, date: u32, stadium_code: u8, race_no: u8) -> Option<crate::predictor::WeatherFeatures> {
+        self.weather.get(&(date, stadium_code, race_no)).map(|(weather, wind_dir, wind_speed, wave_height)| {
+            crate::predictor::WeatherFeatures::new(weather, wind_dir, *wind_speed, *wave_height)
+        })
+    }
+
+    /// Total number of races with weather data
+    pub fn len(&self) -> usize {
+        self.weather.len()
+    }
+
+    /// Check if empty
+    pub fn is_empty(&self) -> bool {
+        self.weather.is_empty()
+    }
+}
+
 /// Indexed race info with O(1) lookups for race_type
 pub struct IndexedRaceInfo {
     /// race_type indexed by race key
@@ -302,7 +362,7 @@ enum UnifiedPredictor {
 impl UnifiedPredictor {
     #[allow(dead_code)]
     fn predict_positions(&mut self, entries: &[RacerEntry]) -> Vec<PositionProb> {
-        self.predict_positions_full(entries, None, None, None, None)
+        self.predict_positions_full(entries, None, None, None, None, None)
     }
 
     #[allow(dead_code)]
@@ -311,7 +371,7 @@ impl UnifiedPredictor {
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
     ) -> Vec<PositionProb> {
-        self.predict_positions_full(entries, historical, None, None, None)
+        self.predict_positions_full(entries, historical, None, None, None, None)
     }
 
     fn predict_positions_full(
@@ -321,10 +381,11 @@ impl UnifiedPredictor {
         exhibition_times: Option<[f64; 6]>,
         race_context: Option<(f64, f64)>,
         stadium_code: Option<u8>,
+        weather: Option<&crate::predictor::WeatherFeatures>,
     ) -> Vec<PositionProb> {
         match self {
             UnifiedPredictor::Onnx(p) => {
-                p.predict_positions_full(entries, historical, exhibition_times, race_context, stadium_code)
+                p.predict_positions_full(entries, historical, exhibition_times, race_context, stadium_code, weather)
                     .unwrap_or_else(|e| {
                         eprintln!("ONNX prediction failed: {}, using fallback", e);
                         FallbackPredictor::new().predict_positions(entries)
@@ -437,6 +498,27 @@ impl BacktestSimulator {
             None
         };
 
+        // Load weather data from results_races.csv
+        let results_races_path = results_path.as_ref().parent()
+            .map(|p| p.join("results_races.csv"))
+            .unwrap_or_else(|| PathBuf::from("results_races.csv"));
+        let weather_data = if results_races_path.exists() {
+            eprintln!("Loading weather data...");
+            match IndexedWeatherData::load(&results_races_path) {
+                Ok(data) => {
+                    eprintln!("Loaded weather for {} races", data.len());
+                    Some(data)
+                }
+                Err(e) => {
+                    eprintln!("Failed to load weather data: {}, using defaults", e);
+                    None
+                }
+            }
+        } else {
+            eprintln!("Weather data file not found, using defaults");
+            None
+        };
+
         // Load racer history index for historical features
         eprintln!("Loading racer history...");
         let history_index = crate::data::RacerHistoryIndex::load(&results_path)?;
@@ -509,7 +591,9 @@ impl BacktestSimulator {
                 None // Use defaults (1.0, 0.0) for synthetic odds
             };
 
-            // Run prediction with historical features, exhibition times, race context, and stadium
+            // Run prediction with historical features, exhibition times, race context, stadium, and weather
+            let weather = weather_data.as_ref()
+                .and_then(|wd| wd.get_weather(*date, *stadium_code, *race_no));
             let racer_entries: Vec<_> = entries.iter().map(|e| e.to_racer_entry()).collect();
             let position_probs = self.predictor.predict_positions_full(
                 &racer_entries,
@@ -517,6 +601,7 @@ impl BacktestSimulator {
                 exhibition_times,
                 race_context,
                 Some(*stadium_code),
+                weather.as_ref(),
             );
             let exacta_probs = self.predictor.calculate_exacta_probs(&position_probs);
 

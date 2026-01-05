@@ -10,8 +10,8 @@ use tracing::info;
 /// Number of position models (one per finishing position 1-6)
 const NUM_MODELS: usize = 6;
 /// Number of features expected by the model
-/// Stadium (1) + Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) = 43
-const NUM_FEATURES: usize = 43;
+/// Stadium (1) + Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) + Weather (7) = 50
+const NUM_FEATURES: usize = 50;
 
 /// Platt scaling calibrator coefficients
 #[derive(Debug, Clone, Deserialize)]
@@ -19,6 +19,62 @@ pub struct Calibrator {
     pub position: usize,
     pub coef: f64,
     pub intercept: f64,
+}
+
+/// Weather features for a race
+#[derive(Debug, Clone, Default)]
+pub struct WeatherFeatures {
+    pub weather_encoded: f64,      // 0=sunny, 1=cloudy, 2=rain, 3=snow, 4=fog
+    pub wind_speed: f64,           // Wind speed in meters
+    pub wave_height: f64,          // Wave height in cm
+    pub wind_direction_sin: f64,   // sin(direction_degrees)
+    pub wind_direction_cos: f64,   // cos(direction_degrees)
+}
+
+impl WeatherFeatures {
+    /// Create weather features from raw data
+    pub fn new(weather: &str, wind_direction: &str, wind_speed: f64, wave_height: f64) -> Self {
+        let weather_encoded = match weather {
+            "晴" => 0.0,
+            "曇り" | "曇" => 1.0,
+            "雨" => 2.0,
+            "雪" => 3.0,
+            "霧" => 4.0,
+            _ => 1.0, // Default to cloudy
+        };
+
+        let degrees: f64 = match wind_direction {
+            "北" => 0.0,
+            "北東" => 45.0,
+            "東" => 90.0,
+            "南東" => 135.0,
+            "南" => 180.0,
+            "南西" => 225.0,
+            "西" => 270.0,
+            "北西" => 315.0,
+            _ => 0.0, // Default to north
+        };
+        let radians = degrees.to_radians();
+
+        Self {
+            weather_encoded,
+            wind_speed,
+            wave_height,
+            wind_direction_sin: radians.sin(),
+            wind_direction_cos: radians.cos(),
+        }
+    }
+
+    /// Calculate wind × wave interaction feature
+    pub fn wind_wave_interaction(&self) -> f64 {
+        self.wind_speed * self.wave_height / 100.0
+    }
+
+    /// Calculate inside wave penalty for a specific boat
+    /// Inside lanes (1, 2) are more affected by waves than outside lanes (5, 6)
+    pub fn inside_wave_penalty(&self, boat_no: u8) -> f64 {
+        self.wave_height * (7.0 - boat_no as f64) / 600.0
+    }
 }
 
 /// Model metadata including calibrators
@@ -114,7 +170,7 @@ impl Predictor {
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
     ) -> Result<Vec<PositionProb>, Box<dyn std::error::Error>> {
-        self.predict_positions_full(entries, historical, None, None, None)
+        self.predict_positions_full(entries, historical, None, None, None, None)
     }
 
     /// Predict position probabilities with all features
@@ -125,6 +181,7 @@ impl Predictor {
     /// * `exhibition_times` - Optional exhibition times for each boat [boat1_time, ..., boat6_time]
     /// * `race_context` - Optional (race_grade, is_final) tuple
     /// * `stadium_code` - Optional stadium code (1-24) for stadium-specific effects
+    /// * `weather` - Optional weather features for the race
     pub fn predict_positions_full(
         &mut self,
         entries: &[RacerEntry],
@@ -132,13 +189,14 @@ impl Predictor {
         exhibition_times: Option<[f64; 6]>,
         race_context: Option<(f64, f64)>,
         stadium_code: Option<u8>,
+        weather: Option<&WeatherFeatures>,
     ) -> Result<Vec<PositionProb>, Box<dyn std::error::Error>> {
         if entries.len() != 6 {
             return Err("Exactly 6 entries required".into());
         }
 
-        // Create feature matrix (6 boats × 43 features)
-        let features = self.extract_features_full(entries, historical, exhibition_times, race_context, stadium_code);
+        // Create feature matrix (6 boats × 50 features)
+        let features = self.extract_features_full(entries, historical, exhibition_times, race_context, stadium_code, weather);
 
         // Run inference for each position model
         let mut position_probs = vec![[0.0f64; 6]; 6]; // boats × positions
@@ -152,16 +210,18 @@ impl Predictor {
 
             let outputs = session.run(ort::inputs!["input" => input_tensor])?;
 
-            // Extract predictions for each boat
-            let (_, output_data) = outputs[0].try_extract_tensor::<f32>()?;
+            // Extract probabilities for each boat
+            // outputs[0] = label (i64), outputs[1] = probabilities [batch, 2]
+            // For binary classifier, column 1 is P(class=1) = P(boat finishes in this position)
+            let (_, prob_data) = outputs[1].try_extract_tensor::<f32>()?;
 
-            for (boat_idx, value) in output_data.iter().enumerate() {
-                if boat_idx < 6 {
-                    let raw_pred = *value as f64;
-                    // Apply Platt scaling calibration if available
-                    let calibrated = Self::apply_platt_scaling_static(&calibrators, raw_pred, pos_idx);
-                    position_probs[boat_idx][pos_idx] = calibrated;
-                }
+            for boat_idx in 0..6 {
+                // prob_data is [batch=6, classes=2], we want column 1 (prob of class 1)
+                // Row-major layout: element [boat_idx, 1] is at index boat_idx * 2 + 1
+                let raw_pred = prob_data[boat_idx * 2 + 1] as f64;
+                // Apply Platt scaling calibration if available
+                let calibrated = Self::apply_platt_scaling_static(&calibrators, raw_pred, pos_idx);
+                position_probs[boat_idx][pos_idx] = calibrated;
             }
         }
 
@@ -181,7 +241,7 @@ impl Predictor {
 
     /// Extract features from race entries with optional real historical features and exhibition times
     ///
-    /// Order: Stadium (1) + Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) = 43 features per boat
+    /// Order: Stadium (1) + Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) + Weather (7) = 50 features per boat
     fn extract_features_full(
         &self,
         entries: &[RacerEntry],
@@ -189,6 +249,7 @@ impl Predictor {
         exhibition_times: Option<[f64; 6]>,
         race_context: Option<(f64, f64)>,
         stadium_code: Option<u8>,
+        weather: Option<&WeatherFeatures>,
     ) -> Vec<f64> {
         let mut features = Vec::with_capacity(6 * NUM_FEATURES);
 
@@ -319,6 +380,26 @@ impl Predictor {
             features.push(equipment_rank);
             features.push(favorite_score);
             features.push(upset_potential);
+
+            // 7. Weather features (7)
+            if let Some(wx) = weather {
+                features.push(wx.weather_encoded);
+                features.push(wx.wind_speed);
+                features.push(wx.wave_height);
+                features.push(wx.wind_direction_sin);
+                features.push(wx.wind_direction_cos);
+                features.push(wx.wind_wave_interaction());
+                features.push(wx.inside_wave_penalty(entry.boat_no));
+            } else {
+                // Default weather (calm conditions: cloudy, no wind, no waves)
+                features.push(1.0);  // weather_encoded = cloudy
+                features.push(0.0);  // wind_speed
+                features.push(0.0);  // wave_height
+                features.push(0.0);  // wind_direction_sin
+                features.push(1.0);  // wind_direction_cos (north)
+                features.push(0.0);  // wind_wave_interaction
+                features.push(0.0);  // inside_wave_penalty
+            }
         }
 
         features
@@ -366,7 +447,7 @@ impl Predictor {
     /// Extract features from race entries (proxy historical features)
     #[allow(dead_code)]
     fn extract_features(&self, entries: &[RacerEntry]) -> Vec<f64> {
-        self.extract_features_full(entries, None, None, None, None)
+        self.extract_features_full(entries, None, None, None, None, None)
     }
 
     /// Encode racer class to numeric value
