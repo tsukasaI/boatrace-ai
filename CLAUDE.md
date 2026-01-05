@@ -270,17 +270,15 @@ P(boat_i=1st, boat_j=2nd) ≈ P(boat_i=1st) × P(boat_j=2nd) / (1 - P(boat_j=1st
 
 ## Betting Strategy
 
-### Synthetic vs Real Odds
+### LambdaRank vs Binary Classifier (Real Odds)
 
-The model behaves differently with synthetic odds (generated from probabilities) vs real market odds:
+LambdaRank fixes the favorite-longshot bias that plagued the binary classifier:
 
-| Strategy | Synthetic Odds | Real Odds |
-|----------|---------------|-----------|
-| EV (default) | +14.9% ROI | -96.4% ROI |
-| EV + max-odds 30 | N/A | +35.8% ROI |
-| Probability (--by-prob) | N/A | +42.4% ROI |
-
-**Why EV fails with real odds**: The model exhibits "favorite-longshot bias" - it overestimates probabilities for longshots (high odds). Real odds already reflect market efficiency, so high-EV bets tend to be on extreme longshots that rarely win.
+| Strategy | Binary ROI | LambdaRank ROI | Improvement |
+|----------|------------|----------------|-------------|
+| EV (default) | -96.4% | **+12.8%** | +109% |
+| EV + max-odds 30 | +35.8% | +32.5% | similar |
+| Probability (--by-prob) | +42.4% | **+45.7%** | +3% |
 
 ### Recommended Settings
 
@@ -291,20 +289,25 @@ boat backtest --all-data --model-dir ../models/onnx --synthetic-odds
 
 **For backtesting/betting with real odds:**
 ```bash
-# Option 1: Probability-based (highest total profit)
+# Option 1: Probability-based (best ROI + lowest drawdown)
 boat backtest --all-data --model-dir ../models/onnx --by-prob
 
-# Option 2: EV with odds cap (more selective)
+# Option 2: EV strategy (now works with LambdaRank!)
+boat backtest --all-data --model-dir ../models/onnx
+
+# Option 3: EV with odds cap (more selective)
 boat backtest --all-data --model-dir ../models/onnx --max-odds 30
 ```
 
-### Strategy Comparison (Real Odds)
+### LambdaRank Strategy Comparison (Real Odds)
 
-| Strategy | Bets | Wins | Hit Rate | ROI | Avg Odds |
-|----------|------|------|----------|-----|----------|
-| EV (no cap) | 2,448 | 1 | 0.04% | -96.4% | 461.9 |
-| EV + max-odds 30 | 453 | 24 | 5.3% | +35.8% | 26.3 |
-| Probability | 2,448 | 467 | 19.1% | +42.4% | 10.7 |
+| Strategy | Bets | Wins | Hit Rate | ROI | Max Drawdown |
+|----------|------|------|----------|-----|--------------|
+| EV (default) | 2,431 | 50 | 2.1% | +12.8% | 30,620 |
+| EV + max-odds 30 | 1,933 | 181 | 9.4% | +32.5% | 17,070 |
+| **Probability** | 2,448 | 494 | 20.2% | **+45.7%** | 3,952 |
+
+**Probability strategy recommended**: Highest ROI (+45.7%) with lowest drawdown (¥3,952).
 
 ## Backtest Results (Rust + ONNX + Synthetic Odds)
 
@@ -341,16 +344,14 @@ The simulator auto-detects model type from `metadata.json` and uses the appropri
 
 ## Known Issues & Limitations
 
-### Favorite-Longshot Bias
+### ~~Favorite-Longshot Bias~~ (Fixed with LambdaRank)
 
-The model exhibits probability overestimation for high-odds (longshot) combinations:
-- Real market odds already incorporate efficient pricing
-- EV > 1.0 bets tend to be on extreme longshots that rarely win
-- This is why EV strategy fails with real odds (-96.4% ROI)
+~~The binary classifier exhibits probability overestimation for high-odds (longshot) combinations, causing EV strategy to fail with real odds (-96.4% ROI).~~
 
-**Workarounds:**
-- Use `--by-prob` for probability-based betting (+42.4% ROI)
-- Use `--max-odds 30` to filter extreme longshots (+35.8% ROI)
+**Fixed**: LambdaRank model has better probability calibration:
+- EV strategy now works with real odds (+12.8% ROI)
+- Probability strategy achieves +45.7% ROI
+- Plackett-Luce probabilities match actual outcomes
 
 ### ~~Regression vs Classification Mismatch~~ (Fixed)
 
