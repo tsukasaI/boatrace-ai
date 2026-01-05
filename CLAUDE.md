@@ -31,10 +31,12 @@ boatrace-ai/
 │   ├── processed/               # Processed CSV files
 │   └── odds/                    # Scraped real-time odds (JSON)
 ├── models/
-│   ├── boatrace_model.pkl       # LightGBM model (Python)
+│   ├── boatrace_model.pkl       # LightGBM binary classifiers (Python)
+│   ├── boatrace_ranker.pkl      # LightGBM LambdaRank model (Python)
 │   └── onnx/                    # ONNX models (for Rust)
-│       ├── position_1-6.onnx    # 6 position prediction models
-│       └── metadata.json        # Feature names & model info
+│       ├── position_1-6.onnx    # 6 position prediction models (binary)
+│       ├── ranker.onnx          # Single ranking model (LambdaRank)
+│       └── metadata.json        # Feature names, model type & calibrators
 ├── src/                         # Python (training only)
 │   ├── data_collection/
 │   │   ├── downloader.py        # Download LZH files
@@ -203,8 +205,11 @@ uv run python src/preprocessing/parser.py
 
 ### Train Model
 ```bash
-# Basic training
+# Binary classification model (6 models, one per position)
 uv run python src/models/train.py --historical
+
+# LambdaRank ranking model (single model with Plackett-Luce)
+uv run python src/models/train.py --historical --ranking
 
 # With hyperparameter optimization
 uv run python src/models/train.py --historical --optimize --n-trials 50
@@ -212,8 +217,11 @@ uv run python src/models/train.py --historical --optimize --n-trials 50
 # Evaluate
 uv run python src/models/evaluate.py --historical
 
-# Export to ONNX
+# Export to ONNX (binary classifiers)
 uv run python src/models/export_onnx.py --verify --compare
+
+# Export to ONNX (LambdaRank ranker)
+uv run python src/models/export_onnx.py --ranking
 ```
 
 ## Key Concepts
@@ -227,6 +235,21 @@ Buy only when expected_value > 1.0
 ### Bet Types
 - **Exacta (2連単)**: 1st + 2nd in order (30 combinations)
 - **Trifecta (3連単)**: 1st + 2nd + 3rd in order (120 combinations)
+
+### Model Types
+
+**Binary Classifier (default)**
+- 6 independent models, one per finishing position
+- Each model predicts P(boat finishes in position k)
+- Platt scaling calibration for probability estimates
+- Files: `position_1.onnx` ... `position_6.onnx`
+
+**LambdaRank Ranker**
+- Single learning-to-rank model
+- Outputs ranking scores, converted to probabilities via Plackett-Luce
+- Enforces one-boat-per-position constraint naturally
+- Files: `ranker.onnx`
+- Training: NDCG@1=0.855, NDCG@2=0.861, NDCG@3=0.889
 
 ### Model Output
 ```python
@@ -287,10 +310,12 @@ boat backtest --all-data --model-dir ../models/onnx --max-odds 30
 | Metric | Value |
 |--------|-------|
 | Total bets | 109,647 |
-| Winning bets | 813 |
-| ROI | **+0.8%** |
-| Hit rate | 0.7% |
-| Profit factor | 1.01 |
+| Winning bets | 1,046 |
+| ROI | **+9.2%** |
+| Hit rate | 1.0% |
+| Profit factor | 1.09 |
+
+*Results with binary classifier + weather features. LambdaRank model available but not yet integrated with backtesting.*
 
 ## Known Issues & Limitations
 
@@ -321,8 +346,8 @@ The model exhibits probability overestimation for high-odds (longshot) combinati
 |----|-------------|------|--------|--------|
 | H1 | Change objective from `regression` to `binary` | train.py:49 | Better probability estimates | ✅ Done |
 | H2 | Export Platt scaling to ONNX metadata | export_onnx.py | Calibrated predictions in Rust | ✅ Done |
-| H3 | Joint position model (Plackett-Luce) | train.py | Enforce one-boat-per-position | |
-| H4 | Add weather features | features.py, parser.py | Weather significantly affects outcomes | |
+| H3 | LambdaRank ranking model | train.py, predictor.rs | Single model with Plackett-Luce probabilities | ✅ Done |
+| H4 | Add weather features | features.py, parser.py | Weather significantly affects outcomes | ✅ Done |
 
 ### Medium Priority (Quality of Life)
 
@@ -364,7 +389,7 @@ The model exhibits probability overestimation for high-odds (longshot) combinati
 - boatrace.jp may be temporarily unavailable
 
 **Feature mismatch error**
-- Ensure Python and Rust feature counts match (43 features)
+- Ensure Python and Rust feature counts match (50 features)
 - Re-export ONNX after training: `uv run python src/models/export_onnx.py --verify`
 
 ## API Reference
@@ -402,11 +427,11 @@ curl -X POST http://localhost:8080/api/predict \
 
 **Data Flow:**
 1. Raw TXT (CP932) → Python parser → CSV
-2. CSV → Rust loader → Feature extraction (43 features)
+2. CSV → Rust loader → Feature extraction (50 features)
 3. Features → ONNX model → Position probabilities
 4. Probabilities + Odds → Expected Value → Betting decision
 
-**Feature Categories (43 total):**
+**Feature Categories (50 total):**
 - Stadium code (1)
 - Base features (10): national/local win rates, age, weight, class, branch, motor/boat rates
 - Historical features (16): recent performance, course-specific stats, start timing
@@ -414,6 +439,7 @@ curl -X POST http://localhost:8080/api/predict \
 - Exhibition features (3): time, rank, diff from average
 - Context features (2): race_grade, is_final
 - Interaction features (6): class×course, motor×exhibition, equipment scores
+- Weather features (7): weather, wind speed/direction, wave height, interactions
 
 ### Adding New Features
 
