@@ -238,18 +238,19 @@ Buy only when expected_value > 1.0
 
 ### Model Types
 
-**Binary Classifier (default)**
-- 6 independent models, one per finishing position
-- Each model predicts P(boat finishes in position k)
-- Platt scaling calibration for probability estimates
-- Files: `position_1.onnx` ... `position_6.onnx`
-
-**LambdaRank Ranker**
+**LambdaRank Ranker (recommended)**
 - Single learning-to-rank model
 - Outputs ranking scores, converted to probabilities via Plackett-Luce
 - Enforces one-boat-per-position constraint naturally
 - Files: `ranker.onnx`
 - Training: NDCG@1=0.855, NDCG@2=0.861, NDCG@3=0.889
+- **+178% ROI** with synthetic odds (vs +9% for binary)
+
+**Binary Classifier (legacy)**
+- 6 independent models, one per finishing position
+- Each model predicts P(boat finishes in position k)
+- Platt scaling calibration for probability estimates
+- Files: `position_1.onnx` ... `position_6.onnx`
 
 ### Model Output
 ```python
@@ -307,15 +308,36 @@ boat backtest --all-data --model-dir ../models/onnx --max-odds 30
 
 ## Backtest Results (Rust + ONNX + Synthetic Odds)
 
-| Metric | Value |
-|--------|-------|
-| Total bets | 109,647 |
-| Winning bets | 1,046 |
-| ROI | **+9.2%** |
-| Hit rate | 1.0% |
-| Profit factor | 1.09 |
+### Model Comparison
 
-*Results with binary classifier + weather features. LambdaRank model available but not yet integrated with backtesting.*
+| Metric | Binary Classifier | LambdaRank |
+|--------|-------------------|------------|
+| **ROI** | +9.2% | **+178.4%** |
+| Total bets | 345,960 | 345,867 |
+| Winning bets | 2,859 | 28,245 |
+| Hit rate | 0.8% | 8.2% |
+| Avg probability | 3.0% | 9.3% |
+| Avg odds | 146.3 | 60.6 |
+| Profit factor | 1.09 | 2.94 |
+
+**Why LambdaRank performs better:**
+- **Better calibration**: Plackett-Luce probabilities (9.3%) closely match actual hit rate (8.2%)
+- **Reasonable odds**: Bets on 60x avg odds vs 146x for binary classifier
+- **10× higher hit rate**: Model learned ranking relationships, not just independent probabilities
+
+### Training Commands
+
+```bash
+# Train LambdaRank (recommended)
+uv run python src/models/train.py --historical --ranking
+uv run python src/models/export_onnx.py --ranking
+
+# Train Binary classifier
+uv run python src/models/train.py --historical
+uv run python src/models/export_onnx.py --verify
+```
+
+The simulator auto-detects model type from `metadata.json` and uses the appropriate predictor.
 
 ## Known Issues & Limitations
 
