@@ -36,12 +36,12 @@ class DatasetBuilder:
     def load_data(
         self,
         data_dir: Path = None,
-    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Load CSV data
 
         Returns:
-            (programs_df, results_df, races_df)
+            (programs_df, results_df, races_df, weather_df)
         """
         data_dir = data_dir or PROCESSED_DATA_DIR
 
@@ -55,7 +55,14 @@ class DatasetBuilder:
         else:
             races_df = None
 
-        return programs_df, results_df, races_df
+        # Load results races for weather data
+        results_races_path = data_dir / "results_races.csv"
+        if results_races_path.exists():
+            weather_df = pd.read_csv(results_races_path)
+        else:
+            weather_df = None
+
+        return programs_df, results_df, races_df, weather_df
 
     def merge_data(
         self,
@@ -122,6 +129,50 @@ class DatasetBuilder:
 
         return labels
 
+    def create_ranking_labels(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Generate ranking labels for LambdaRank training.
+
+        Labels are relevance scores: 5 for 1st place, 4 for 2nd, ..., 0 for 6th.
+        Invalid ranks (disqualified, etc.) get 0.
+
+        Args:
+            df: DataFrame containing rank column
+
+        Returns:
+            Ranking labels with shape (n_samples,) - integer relevance scores
+        """
+        labels = np.zeros(len(df), dtype=np.int32)
+
+        for i, rank in enumerate(df["rank"].values):
+            if 1 <= rank <= 6:
+                # Higher relevance for better position
+                # 1st place = 5 (highest), 6th place = 0 (lowest)
+                labels[i] = 6 - int(rank)
+            else:
+                # Disqualified boats get 0 relevance
+                labels[i] = 0
+
+        return labels
+
+    def create_group_array(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Create group array for LambdaRank training.
+
+        Each race is a group. Groups are identified by (date, stadium_code, race_no).
+        Returns array where each element is the size of a group (should be 6 for valid races).
+
+        Args:
+            df: DataFrame with race identifiers (must be sorted by race)
+
+        Returns:
+            Group sizes array (n_groups,)
+        """
+        group_sizes = df.groupby(
+            ["date", "stadium_code", "race_no"], sort=False
+        ).size().values
+        return group_sizes
+
     def split_data(
         self,
         df: pd.DataFrame,
@@ -148,6 +199,7 @@ class DatasetBuilder:
         self,
         data_dir: Path = None,
         include_historical: bool = True,
+        for_ranking: bool = False,
     ) -> dict:
         """
         Build training dataset
@@ -155,12 +207,13 @@ class DatasetBuilder:
         Args:
             data_dir: Data directory
             include_historical: Whether to include historical features
+            for_ranking: Whether to build dataset for LambdaRank training
 
         Returns:
             Dataset dictionary
         """
         # Load data
-        programs_df, results_df, races_df = self.load_data(data_dir)
+        programs_df, results_df, races_df, weather_df = self.load_data(data_dir)
 
         # Merge data
         merged_df = self.merge_data(programs_df, results_df, races_df)
@@ -169,11 +222,11 @@ class DatasetBuilder:
         if include_historical:
             # Historical features require all results data
             features_df = self.feature_eng.create_all_features(
-                merged_df, results_df, include_historical=True
+                merged_df, results_df, include_historical=True, weather_df=weather_df
             )
         else:
             features_df = self.feature_eng.create_all_features(
-                merged_df, None, include_historical=False
+                merged_df, None, include_historical=False, weather_df=weather_df
             )
 
         # Add labels
@@ -196,27 +249,64 @@ class DatasetBuilder:
         # Extract features and labels
         available_cols = [c for c in feature_cols if c in train_df.columns]
 
-        X_train = train_df[available_cols].values
-        y_train = self.create_labels(train_df)
+        if for_ranking:
+            # For LambdaRank: sort by race and create ranking labels + groups
+            # Sort to ensure boats within each race are contiguous
+            sort_cols = ["date", "stadium_code", "race_no", "boat_no"]
+            train_df = train_df.sort_values(sort_cols).reset_index(drop=True)
+            val_df = val_df.sort_values(sort_cols).reset_index(drop=True)
+            test_df = test_df.sort_values(sort_cols).reset_index(drop=True)
 
-        X_val = val_df[available_cols].values
-        y_val = self.create_labels(val_df)
+            X_train = train_df[available_cols].values
+            y_train = self.create_ranking_labels(train_df)
+            group_train = self.create_group_array(train_df)
 
-        X_test = test_df[available_cols].values
-        y_test = self.create_labels(test_df)
+            X_val = val_df[available_cols].values
+            y_val = self.create_ranking_labels(val_df)
+            group_val = self.create_group_array(val_df)
 
-        return {
-            "X_train": X_train,
-            "y_train": y_train,
-            "X_val": X_val,
-            "y_val": y_val,
-            "X_test": X_test,
-            "y_test": y_test,
-            "feature_names": available_cols,
-            "train_df": train_df,
-            "val_df": val_df,
-            "test_df": test_df,
-        }
+            X_test = test_df[available_cols].values
+            y_test = self.create_ranking_labels(test_df)
+            group_test = self.create_group_array(test_df)
+
+            return {
+                "X_train": X_train,
+                "y_train": y_train,
+                "group_train": group_train,
+                "X_val": X_val,
+                "y_val": y_val,
+                "group_val": group_val,
+                "X_test": X_test,
+                "y_test": y_test,
+                "group_test": group_test,
+                "feature_names": available_cols,
+                "train_df": train_df,
+                "val_df": val_df,
+                "test_df": test_df,
+            }
+        else:
+            # Original binary classification format
+            X_train = train_df[available_cols].values
+            y_train = self.create_labels(train_df)
+
+            X_val = val_df[available_cols].values
+            y_val = self.create_labels(val_df)
+
+            X_test = test_df[available_cols].values
+            y_test = self.create_labels(test_df)
+
+            return {
+                "X_train": X_train,
+                "y_train": y_train,
+                "X_val": X_val,
+                "y_val": y_val,
+                "X_test": X_test,
+                "y_test": y_test,
+                "feature_names": available_cols,
+                "train_df": train_df,
+                "val_df": val_df,
+                "test_df": test_df,
+            }
 
 
 def build_simple_dataset(data_dir: Path = None) -> dict:

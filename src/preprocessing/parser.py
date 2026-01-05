@@ -31,6 +31,15 @@ def normalize_fullwidth_numbers(text: str) -> str:
 
 
 @dataclass
+class WeatherInfo:
+    """Weather conditions for a race."""
+    weather: str = ""        # 晴/曇り/雨/雪/霧
+    wind_direction: str = "" # 北/南/東/西/北東/北西/南東/南西
+    wind_speed: int = 0      # meters
+    wave_height: int = 0     # cm
+
+
+@dataclass
 class RaceInfo:
     """Race information."""
     date: str
@@ -41,6 +50,11 @@ class RaceInfo:
     distance: int
     title: str = ""
     day: int = 0  # Day of the event
+    weather: WeatherInfo = None  # Weather conditions (results only)
+
+    def __post_init__(self):
+        if self.weather is None:
+            self.weather = WeatherInfo()
 
 
 @dataclass
@@ -271,8 +285,22 @@ class ResultParser:
     """Race result parser."""
 
     STADIUM_PATTERN = re.compile(r'^(\d{2})KBGN')
-    # Result files use half-width numbers: "   1R       朝１戦予選　    H1800m"
+    # Result files: "   1R       予選　　　　                 H1800m  雨　  風  南西　 1m  波　  1cm"
+    # Basic pattern for race number, type, distance
     RACE_PATTERN = re.compile(r'^\s*(\d+)R\s+(.*?)\s+H(\d+)')
+    # Extended pattern to capture weather data
+    # Groups: 1=race_no, 2=race_type, 3=distance, 4=weather, 5=wind_dir, 6=wind_speed, 7=wave_height
+    RACE_WEATHER_PATTERN = re.compile(
+        r'^\s*(\d+)R\s+'           # Race number
+        r'(.*?)\s+'                # Race type
+        r'H(\d+)m?\s+'             # Distance
+        r'(晴|曇り?|雨|雪|霧)[\s\u3000]+'  # Weather (with fullwidth space)
+        r'風[\s\u3000]+'           # "風" (wind)
+        r'([^\s\u3000]+)[\s\u3000]+'  # Wind direction
+        r'(\d+)m[\s\u3000]+'       # Wind speed
+        r'波[\s\u3000]+'           # "波" (wave)
+        r'(\d+)cm'                 # Wave height
+    )
 
     # Result line pattern: "  01  4 4861 田... 54   72  6.80   4    0.05     1.49.6"
     RESULT_LINE_PATTERN = re.compile(
@@ -369,16 +397,31 @@ class ResultParser:
                 }
                 continue
 
-            # Race information
+            # Race information - try weather pattern first, fall back to basic
+            weather_match = self.RACE_WEATHER_PATTERN.search(line)
             race_match = self.RACE_PATTERN.search(line)
-            if race_match and current_stadium:
+
+            if (weather_match or race_match) and current_stadium:
                 # Yield previous race if exists
                 if current_race and current_results:
                     yield current_race, current_results
 
-                race_no = int(normalize_fullwidth_numbers(race_match.group(1)))
-                race_type = race_match.group(2).strip()
-                distance = int(race_match.group(3))
+                # Extract weather if available
+                weather_info = WeatherInfo()
+                if weather_match:
+                    race_no = int(normalize_fullwidth_numbers(weather_match.group(1)))
+                    race_type = weather_match.group(2).strip()
+                    distance = int(weather_match.group(3))
+                    weather_info = WeatherInfo(
+                        weather=weather_match.group(4).strip(),
+                        wind_direction=weather_match.group(5).strip(),
+                        wind_speed=int(weather_match.group(6)),
+                        wave_height=int(weather_match.group(7)),
+                    )
+                else:
+                    race_no = int(normalize_fullwidth_numbers(race_match.group(1)))
+                    race_type = race_match.group(2).strip()
+                    distance = int(race_match.group(3))
 
                 current_race = RaceInfo(
                     date=date_str,
@@ -387,6 +430,7 @@ class ResultParser:
                     race_no=race_no,
                     race_type=race_type,
                     distance=distance,
+                    weather=weather_info,
                 )
                 current_results = []
                 in_results_section = False
@@ -585,6 +629,12 @@ def convert_to_csv(input_dir: Path, output_dir: Path, data_type: str = "programs
                 "race_type": race_info.race_type,
                 "distance": race_info.distance,
             }
+            # Add weather data for results (not available in programs)
+            if data_type == "results" and race_info.weather:
+                race_dict["weather"] = race_info.weather.weather
+                race_dict["wind_direction"] = race_info.weather.wind_direction
+                race_dict["wind_speed"] = race_info.weather.wind_speed
+                race_dict["wave_height"] = race_info.weather.wave_height
             all_races.append(race_dict)
 
             for entry in entries:

@@ -13,6 +13,20 @@ const NUM_MODELS: usize = 6;
 /// Stadium (1) + Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) + Weather (7) = 50
 const NUM_FEATURES: usize = 50;
 
+/// Model type discriminator
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelType {
+    Binary,      // Legacy 6 binary classifiers
+    LambdaRank,  // Single ranking model
+}
+
+impl Default for ModelType {
+    fn default() -> Self {
+        ModelType::Binary
+    }
+}
+
 /// Platt scaling calibrator coefficients
 #[derive(Debug, Clone, Deserialize)]
 pub struct Calibrator {
@@ -77,9 +91,11 @@ impl WeatherFeatures {
     }
 }
 
-/// Model metadata including calibrators
+/// Model metadata including calibrators and model type
 #[derive(Debug, Deserialize)]
 struct ModelMetadata {
+    #[serde(default)]
+    model_type: ModelType,
     #[allow(dead_code)]
     n_models: usize,
     #[allow(dead_code)]
@@ -639,6 +655,411 @@ impl Predictor {
         // Sort by probability descending
         predictions.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
 
+        predictions
+    }
+}
+
+/// ONNX-based ranker predictor using LambdaRank with Plackett-Luce probability conversion
+pub struct RankerPredictor {
+    session: Session,
+}
+
+impl RankerPredictor {
+    /// Create a new ranker predictor by loading the ONNX model
+    pub fn new<P: AsRef<Path>>(model_dir: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let model_dir = model_dir.as_ref();
+        let model_path = model_dir.join("ranker.onnx");
+
+        info!("Loading LambdaRank model: {:?}", model_path);
+
+        let session = Session::builder()?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .commit_from_file(&model_path)?;
+
+        info!("Loaded LambdaRank model");
+        Ok(Self { session })
+    }
+
+    /// Predict position probabilities for each boat using Plackett-Luce
+    pub fn predict_positions_full(
+        &mut self,
+        entries: &[RacerEntry],
+        historical: Option<&[crate::data::HistoricalFeatures]>,
+        exhibition_times: Option<[f64; 6]>,
+        race_context: Option<(f64, f64)>,
+        stadium_code: Option<u8>,
+        weather: Option<&WeatherFeatures>,
+    ) -> Result<Vec<PositionProb>, Box<dyn std::error::Error>> {
+        if entries.len() != 6 {
+            return Err("Exactly 6 entries required".into());
+        }
+
+        // Extract features (same as binary predictor)
+        let features = self.extract_features_full(entries, historical, exhibition_times, race_context, stadium_code, weather);
+
+        // Run inference to get ranking scores
+        let input_vec: Vec<f32> = features.iter().map(|&x| x as f32).collect();
+        let input_tensor = Tensor::from_array(([6usize, NUM_FEATURES], input_vec))?;
+
+        let outputs = self.session.run(ort::inputs!["input" => input_tensor])?;
+
+        // Extract ranking scores - must extract before outputs is dropped
+        let scores: Vec<f64> = {
+            let (_, scores_data) = outputs[0].try_extract_tensor::<f32>()?;
+            (0..6).map(|i| scores_data[i] as f64).collect()
+        };
+        drop(outputs);  // Explicitly drop to release session borrow
+
+        // Convert scores to position probabilities via Plackett-Luce
+        let position_probs = Self::plackett_luce_probs_static(&scores);
+
+        // Build result
+        Ok(entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| PositionProb {
+                boat_no: e.boat_no,
+                probs: position_probs[i],
+            })
+            .collect())
+    }
+
+    /// Convert ranking scores to position probabilities using Plackett-Luce model
+    ///
+    /// Uses Monte Carlo sampling for efficiency.
+    /// probs[boat][position] = P(boat finishes in position)
+    fn plackett_luce_probs_static(scores: &[f64]) -> Vec<[f64; 6]> {
+        use rand::prelude::*;
+        use rand::SeedableRng;
+
+        // Convert scores to worth parameters (softmax-like)
+        let max_score = scores.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let alphas: Vec<f64> = scores.iter().map(|&s| (s - max_score).exp()).collect();
+
+        let n_boats = 6;
+        let n_samples = 5000;
+        let mut counts = vec![[0u32; 6]; 6]; // counts[boat][position]
+
+        // Use deterministic RNG for reproducibility
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        for _ in 0..n_samples {
+            let mut remaining: Vec<usize> = (0..n_boats).collect();
+
+            for pos in 0..n_boats {
+                // Calculate probabilities for remaining boats
+                let total: f64 = remaining.iter().map(|&i| alphas[i]).sum();
+                let mut cumsum = 0.0;
+                let r: f64 = rng.gen();
+                let target = r * total;
+
+                let mut chosen_idx = 0;
+                for (idx, &boat) in remaining.iter().enumerate() {
+                    cumsum += alphas[boat];
+                    if cumsum >= target {
+                        chosen_idx = idx;
+                        break;
+                    }
+                }
+
+                let chosen_boat = remaining[chosen_idx];
+                counts[chosen_boat][pos] += 1;
+                remaining.remove(chosen_idx);
+            }
+        }
+
+        // Convert counts to probabilities
+        let mut probs = vec![[0.0f64; 6]; 6];
+        for boat in 0..n_boats {
+            for pos in 0..n_boats {
+                probs[boat][pos] = counts[boat][pos] as f64 / n_samples as f64;
+            }
+        }
+
+        probs
+    }
+
+    /// Extract features (mirrors the binary predictor's implementation)
+    fn extract_features_full(
+        &self,
+        entries: &[RacerEntry],
+        historical: Option<&[crate::data::HistoricalFeatures]>,
+        exhibition_times: Option<[f64; 6]>,
+        race_context: Option<(f64, f64)>,
+        stadium_code: Option<u8>,
+        weather: Option<&WeatherFeatures>,
+    ) -> Vec<f64> {
+        // Use the same feature extraction as Predictor
+        // This is duplicated to avoid borrow issues; consider refactoring to a shared function
+        let mut features = Vec::with_capacity(6 * NUM_FEATURES);
+
+        let avg_win_rate: f64 =
+            entries.iter().map(|e| e.national_win_rate).sum::<f64>() / entries.len() as f64;
+
+        let equipment_scores: Vec<f64> = entries
+            .iter()
+            .map(|e| (e.motor_in2_rate + e.boat_in2_rate) / 2.0)
+            .collect();
+
+        let exh_times = exhibition_times.unwrap_or([6.80; 6]);
+
+        let valid_times: Vec<f64> = exh_times.iter().filter(|&&t| t > 0.0).copied().collect();
+        let avg_exhibition = if valid_times.is_empty() {
+            6.80
+        } else {
+            valid_times.iter().sum::<f64>() / valid_times.len() as f64
+        };
+
+        let mut exh_ranked: Vec<(usize, f64)> = exh_times.iter().enumerate().map(|(i, &t)| (i, t)).collect();
+        exh_ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut exh_ranks = [3.5; 6];
+        for (rank, (idx, _)) in exh_ranked.iter().enumerate() {
+            exh_ranks[*idx] = (rank + 1) as f64;
+        }
+
+        for (i, entry) in entries.iter().enumerate() {
+            let class_encoded = Self::encode_class(&entry.racer_class);
+            let branch_encoded = Self::encode_branch(&entry.branch);
+
+            // 0. Stadium code (1)
+            features.push(stadium_code.unwrap_or(12) as f64);
+
+            // 1. Base features (10)
+            features.push(entry.national_win_rate);
+            features.push(entry.national_in2_rate);
+            features.push(entry.local_win_rate);
+            features.push(entry.local_in2_rate);
+            features.push(entry.age as f64);
+            features.push(entry.weight as f64);
+            features.push(class_encoded);
+            features.push(branch_encoded);
+            features.push(entry.motor_in2_rate);
+            features.push(entry.boat_in2_rate);
+
+            // 2. Historical features (16)
+            if let Some(hist_list) = historical {
+                if let Some(hist) = hist_list.get(i) {
+                    features.push(hist.recent_win_rate);
+                    features.push(hist.recent_in2_rate);
+                    features.push(hist.recent_in3_rate);
+                    features.push(hist.recent_avg_rank);
+                    features.push(hist.recent_avg_st);
+                    features.push(hist.recent_race_count);
+                    features.push(hist.local_recent_win_rate);
+                    features.push(hist.local_race_count);
+                    features.push(hist.course_win_rate);
+                    features.push(hist.course_in2_rate);
+                    features.push(hist.st_consistency);
+                    features.push(hist.flying_start_rate);
+                    features.push(hist.late_start_rate);
+                    features.push(hist.avg_course_diff);
+                    features.push(hist.inside_take_rate);
+                    features.push(hist.weighted_recent_win);
+                } else {
+                    self.push_proxy_historical_features(entry, &mut features);
+                }
+            } else {
+                self.push_proxy_historical_features(entry, &mut features);
+            }
+
+            // 3. Relative features (5)
+            let win_rate_rank = Self::calculate_rank(entries, |e| e.national_win_rate, entry);
+            let win_rate_diff = entry.national_win_rate - avg_win_rate;
+            let motor_rate_rank = Self::calculate_rank(entries, |e| e.motor_in2_rate, entry);
+            let boat_rate_rank = Self::calculate_rank(entries, |e| e.boat_in2_rate, entry);
+            let course_advantage = Self::get_course_advantage(entry.boat_no);
+
+            features.push(win_rate_rank);
+            features.push(win_rate_diff);
+            features.push(motor_rate_rank);
+            features.push(boat_rate_rank);
+            features.push(course_advantage);
+
+            // 4. Exhibition time features (3)
+            let boat_idx = (entry.boat_no - 1) as usize;
+            let exhibition_time = exh_times[boat_idx];
+            let exhibition_time_rank = exh_ranks[boat_idx];
+            let exhibition_time_diff = exhibition_time - avg_exhibition;
+            features.push(exhibition_time);
+            features.push(exhibition_time_rank);
+            features.push(exhibition_time_diff);
+
+            // 5. Race context features (2)
+            let (race_grade, is_final) = race_context.unwrap_or((1.0, 0.0));
+            features.push(race_grade);
+            features.push(is_final);
+
+            // 6. Interaction features (6)
+            let class_x_course = class_encoded * course_advantage;
+            let exhibition_score = 7.0 - exhibition_time.clamp(6.5, 7.5);
+            let motor_x_exhibition = entry.motor_in2_rate * exhibition_score / 100.0;
+            let equipment_score = equipment_scores[i];
+            let equipment_rank = Self::calculate_rank_by_value(&equipment_scores, equipment_scores[i]);
+            let favorite_score = (class_encoded / 4.0
+                + (7.0 - win_rate_rank) / 6.0
+                + (7.0 - equipment_rank) / 6.0
+                + course_advantage)
+                / 4.0;
+            let upset_potential = class_encoded * (1.0 - course_advantage);
+
+            features.push(class_x_course);
+            features.push(motor_x_exhibition);
+            features.push(equipment_score);
+            features.push(equipment_rank);
+            features.push(favorite_score);
+            features.push(upset_potential);
+
+            // 7. Weather features (7)
+            if let Some(wx) = weather {
+                features.push(wx.weather_encoded);
+                features.push(wx.wind_speed);
+                features.push(wx.wave_height);
+                features.push(wx.wind_direction_sin);
+                features.push(wx.wind_direction_cos);
+                features.push(wx.wind_wave_interaction());
+                features.push(wx.inside_wave_penalty(entry.boat_no));
+            } else {
+                features.push(1.0);
+                features.push(0.0);
+                features.push(0.0);
+                features.push(0.0);
+                features.push(1.0);
+                features.push(0.0);
+                features.push(0.0);
+            }
+        }
+
+        features
+    }
+
+    fn push_proxy_historical_features(&self, entry: &RacerEntry, features: &mut Vec<f64>) {
+        let recent_win_rate = entry.national_win_rate / 100.0;
+        let recent_in2_rate = entry.national_in2_rate / 100.0;
+        let recent_in3_rate = (entry.national_in2_rate + 15.0).min(100.0) / 100.0;
+        let recent_avg_rank = 7.0 - entry.national_win_rate / 2.0;
+        features.push(recent_win_rate);
+        features.push(recent_in2_rate);
+        features.push(recent_in3_rate);
+        features.push(recent_avg_rank);
+        features.push(0.15);  // recent_avg_st
+        features.push(30.0);  // recent_race_count
+        features.push(entry.local_win_rate / 100.0);  // local_recent_win_rate
+        features.push(10.0);  // local_race_count
+        features.push(Self::get_course_advantage(entry.boat_no));  // course_win_rate
+        features.push(recent_in2_rate);  // course_in2_rate
+        features.push(0.05);  // st_consistency
+        features.push(0.0);   // flying_start_rate
+        features.push(0.0);   // late_start_rate
+        features.push(0.0);   // avg_course_diff
+        features.push(0.0);   // inside_take_rate
+        features.push(recent_win_rate);  // weighted_recent_win
+    }
+
+    fn encode_class(class: &str) -> f64 {
+        match class {
+            "A1" => 4.0, "A2" => 3.0, "B1" => 2.0, "B2" => 1.0, _ => 2.0,
+        }
+    }
+
+    fn encode_branch(branch: &str) -> f64 {
+        match branch {
+            "群馬" | "埼玉" | "東京" => 1.0,
+            "静岡" | "愛知" | "三重" => 2.0,
+            "滋賀" | "大阪" | "兵庫" => 3.0,
+            "岡山" | "広島" | "山口" | "徳島" | "香川" => 4.0,
+            "福岡" | "佐賀" | "長崎" | "大分" => 5.0,
+            _ => 0.0,
+        }
+    }
+
+    fn calculate_rank<F>(entries: &[RacerEntry], metric: F, target: &RacerEntry) -> f64
+    where
+        F: Fn(&RacerEntry) -> f64,
+    {
+        let target_value = metric(target);
+        (entries.iter().filter(|e| metric(e) > target_value).count() + 1) as f64
+    }
+
+    fn calculate_rank_by_value(values: &[f64], target: f64) -> f64 {
+        (values.iter().filter(|&&v| v > target).count() + 1) as f64
+    }
+
+    fn get_course_advantage(boat_no: u8) -> f64 {
+        match boat_no {
+            1 => 0.55, 2 => 0.14, 3 => 0.12, 4 => 0.10, 5 => 0.06, 6 => 0.03, _ => 0.10,
+        }
+    }
+
+    /// Calculate exacta probabilities
+    pub fn calculate_exacta_probs(&self, position_probs: &[PositionProb]) -> Vec<ExactaPrediction> {
+        let mut predictions = Vec::with_capacity(30);
+
+        for first in position_probs {
+            let p_first = first.probs[0];
+
+            for second in position_probs {
+                if first.boat_no == second.boat_no {
+                    continue;
+                }
+
+                let p_second = second.probs[1];
+                let p_second_given_first = p_second / (1.0 - second.probs[0]).max(0.01);
+                let probability = p_first * p_second_given_first;
+
+                predictions.push(ExactaPrediction {
+                    first: first.boat_no,
+                    second: second.boat_no,
+                    probability,
+                    odds: None,
+                    expected_value: None,
+                    is_value_bet: false,
+                });
+            }
+        }
+
+        predictions.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
+        predictions
+    }
+
+    /// Calculate trifecta probabilities
+    pub fn calculate_trifecta_probs(&self, position_probs: &[PositionProb]) -> Vec<TrifectaPrediction> {
+        let mut predictions = Vec::with_capacity(120);
+
+        for first in position_probs {
+            let p_first = first.probs[0];
+
+            for second in position_probs {
+                if first.boat_no == second.boat_no {
+                    continue;
+                }
+
+                let p_second_given_first = second.probs[1] / (1.0 - second.probs[0]).max(0.01);
+
+                for third in position_probs {
+                    if third.boat_no == first.boat_no || third.boat_no == second.boat_no {
+                        continue;
+                    }
+
+                    let p_third = third.probs[2];
+                    let p_third_not_top2 = (1.0 - third.probs[0] - third.probs[1]).max(0.01);
+                    let p_third_given = p_third / p_third_not_top2;
+
+                    let probability = p_first * p_second_given_first * p_third_given;
+
+                    predictions.push(TrifectaPrediction {
+                        first: first.boat_no,
+                        second: second.boat_no,
+                        third: third.boat_no,
+                        probability,
+                        odds: None,
+                        expected_value: None,
+                        is_value_bet: false,
+                    });
+                }
+            }
+        }
+
+        predictions.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
         predictions
     }
 }

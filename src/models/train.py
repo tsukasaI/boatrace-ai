@@ -215,6 +215,188 @@ class BoatracePredictor:
         logger.info(f"Model loaded from {path}")
 
 
+class BoatraceRanker:
+    """Boat race ranking model using LightGBM LambdaRank.
+
+    Instead of 6 independent binary classifiers, this uses a single
+    learning-to-rank model that directly learns to rank boats within each race.
+    """
+
+    def __init__(self, params: dict = None):
+        """
+        Args:
+            params: LightGBM LambdaRank parameters
+        """
+        self.params = params or self._default_params()
+        self.model = None
+        self.feature_names = None
+
+    def _default_params(self) -> dict:
+        """Default LambdaRank parameters"""
+        return {
+            "objective": "lambdarank",
+            "metric": "ndcg",
+            "ndcg_eval_at": [1, 2, 3],
+            "boosting_type": "gbdt",
+            "num_leaves": 31,
+            "learning_rate": 0.05,
+            "feature_fraction": 0.8,
+            "bagging_fraction": 0.8,
+            "bagging_freq": 5,
+            "verbose": -1,
+            "n_estimators": 500,
+            "label_gain": [0, 1, 2, 3, 4, 5],  # Gain for each relevance level
+        }
+
+    def train(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        group_train: np.ndarray,
+        X_val: np.ndarray = None,
+        y_val: np.ndarray = None,
+        group_val: np.ndarray = None,
+        feature_names: list = None,
+    ) -> None:
+        """
+        Train LambdaRank model.
+
+        Args:
+            X_train: Training features (n_samples, n_features)
+            y_train: Training labels (n_samples,) - relevance scores 0-5
+            group_train: Group sizes (n_groups,) - sum must equal n_samples
+            X_val: Validation features
+            y_val: Validation labels
+            group_val: Validation group sizes
+            feature_names: List of feature names
+        """
+        self.feature_names = feature_names
+
+        logger.info("Training LambdaRank model...")
+        logger.info(f"  Train samples: {len(X_train)}, groups: {len(group_train)}")
+        if X_val is not None:
+            logger.info(f"  Val samples: {len(X_val)}, groups: {len(group_val)}")
+
+        # Create LightGBM ranker
+        ranker = lgb.LGBMRanker(**self.params)
+
+        # Fit with group parameter
+        eval_set = [(X_val, y_val)] if X_val is not None else None
+        eval_group = [group_val] if group_val is not None else None
+
+        callbacks = [lgb.early_stopping(50)] if eval_set else None
+
+        ranker.fit(
+            X_train, y_train,
+            group=group_train,
+            eval_set=eval_set,
+            eval_group=eval_group,
+            callbacks=callbacks,
+        )
+
+        self.model = ranker.booster_
+        logger.info("Training completed!")
+
+    def predict_scores(self, X: np.ndarray) -> np.ndarray:
+        """
+        Predict ranking scores for each sample.
+
+        Args:
+            X: Features (n_samples, n_features)
+
+        Returns:
+            Ranking scores (n_samples,) - higher = better rank
+        """
+        if self.model is None:
+            raise ValueError("Model not trained")
+        return self.model.predict(X)
+
+    def predict_race_probs(self, X_race: np.ndarray) -> np.ndarray:
+        """
+        Predict position probabilities for a single race using Plackett-Luce.
+
+        Args:
+            X_race: Features for 6 boats (6, n_features)
+
+        Returns:
+            Position probabilities (6, 6) - probs[boat][position]
+        """
+        if X_race.shape[0] != 6:
+            raise ValueError("Expected 6 boats")
+
+        # Get ranking scores
+        scores = self.predict_scores(X_race)
+
+        # Convert to Plackett-Luce probabilities
+        return self._plackett_luce_probs(scores)
+
+    def _plackett_luce_probs(self, scores: np.ndarray) -> np.ndarray:
+        """
+        Convert ranking scores to position probabilities via Plackett-Luce.
+
+        Uses Monte Carlo sampling for efficiency.
+
+        Args:
+            scores: Ranking scores for 6 boats
+
+        Returns:
+            (6, 6) matrix where [i][j] = P(boat i finishes in position j+1)
+        """
+        # Convert scores to worth parameters
+        max_score = np.max(scores)
+        alphas = np.exp(scores - max_score)  # Normalized to prevent overflow
+
+        n_boats = len(scores)
+        probs = np.zeros((n_boats, n_boats))
+
+        # Monte Carlo sampling
+        n_samples = 5000
+        np.random.seed(42)  # Deterministic for reproducibility
+
+        for _ in range(n_samples):
+            remaining = list(range(n_boats))
+            remaining_alphas = alphas.copy()
+
+            for pos in range(n_boats):
+                # Probability of each remaining boat taking this position
+                total = sum(remaining_alphas[i] for i in remaining)
+                boat_probs = [remaining_alphas[i] / total for i in remaining]
+
+                # Sample which boat takes this position
+                cumsum = np.cumsum(boat_probs)
+                r = np.random.random()
+                chosen_idx = np.searchsorted(cumsum, r)
+                chosen_idx = min(chosen_idx, len(remaining) - 1)
+                chosen_boat = remaining[chosen_idx]
+
+                probs[chosen_boat, pos] += 1
+                remaining.remove(chosen_boat)
+
+        probs /= n_samples
+        return probs
+
+    def save(self, path: Path = None) -> None:
+        """Save the model"""
+        path = path or MODEL_DIR / "boatrace_ranker.pkl"
+        with open(path, "wb") as f:
+            pickle.dump({
+                "model": self.model,
+                "params": self.params,
+                "feature_names": self.feature_names,
+            }, f)
+        logger.info(f"Model saved to {path}")
+
+    def load(self, path: Path = None) -> None:
+        """Load the model"""
+        path = path or MODEL_DIR / "boatrace_ranker.pkl"
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+            self.model = data["model"]
+            self.params = data["params"]
+            self.feature_names = data["feature_names"]
+        logger.info(f"Model loaded from {path}")
+
+
 def optimize_hyperparameters(
     X_train: np.ndarray,
     y_train: np.ndarray,
@@ -286,7 +468,8 @@ def train_model(
     optimize: bool = False,
     n_trials: int = 50,
     calibrate: bool = True,
-) -> BoatracePredictor:
+    use_ranking: bool = False,
+):
     """
     Main function to train the model
 
@@ -294,14 +477,18 @@ def train_model(
         use_historical: Whether to use historical features
         optimize: Whether to perform hyperparameter optimization
         n_trials: Number of optimization trials
-        calibrate: Whether to apply Platt scaling calibration
+        calibrate: Whether to apply Platt scaling calibration (binary only)
+        use_ranking: Whether to use LambdaRank instead of binary classification
 
     Returns:
-        Trained model
+        Trained model (BoatracePredictor or BoatraceRanker)
     """
     logger.info("Building dataset...")
     builder = DatasetBuilder()
-    dataset = builder.build_dataset(include_historical=use_historical)
+    dataset = builder.build_dataset(
+        include_historical=use_historical,
+        for_ranking=use_ranking,
+    )
 
     X_train = dataset["X_train"]
     y_train = dataset["y_train"]
@@ -313,26 +500,43 @@ def train_model(
     logger.info(f"Val samples: {len(X_val)}")
     logger.info(f"Features: {len(feature_names)}")
 
-    # Hyperparameter optimization
-    if optimize:
-        logger.info("Optimizing hyperparameters...")
-        best_params = optimize_hyperparameters(
-            X_train, y_train, X_val, y_val, n_trials
+    if use_ranking:
+        # LambdaRank training
+        group_train = dataset["group_train"]
+        group_val = dataset["group_val"]
+
+        logger.info(f"Train groups: {len(group_train)}")
+        logger.info(f"Val groups: {len(group_val)}")
+
+        model = BoatraceRanker()
+        model.train(
+            X_train, y_train, group_train,
+            X_val, y_val, group_val,
+            feature_names,
         )
-        params = {**BoatracePredictor()._default_params(), **best_params}
+        model.save()
     else:
-        params = None
+        # Binary classification training
+        # Hyperparameter optimization
+        if optimize:
+            logger.info("Optimizing hyperparameters...")
+            best_params = optimize_hyperparameters(
+                X_train, y_train, X_val, y_val, n_trials
+            )
+            params = {**BoatracePredictor()._default_params(), **best_params}
+        else:
+            params = None
 
-    # Model training
-    model = BoatracePredictor(params=params)
-    model.train(X_train, y_train, X_val, y_val, feature_names)
+        # Model training
+        model = BoatracePredictor(params=params)
+        model.train(X_train, y_train, X_val, y_val, feature_names)
 
-    # Platt scaling calibration using validation set
-    if calibrate:
-        model.calibrate(X_val, y_val)
+        # Platt scaling calibration using validation set
+        if calibrate:
+            model.calibrate(X_val, y_val)
 
-    # Save
-    model.save()
+        # Save
+        model.save()
 
     return model
 
@@ -346,6 +550,7 @@ def main():
     parser.add_argument("--optimize", action="store_true", help="Optimize hyperparameters")
     parser.add_argument("--n-trials", type=int, default=50, help="Number of optimization trials")
     parser.add_argument("--no-calibrate", action="store_true", help="Skip Platt scaling calibration")
+    parser.add_argument("--ranking", action="store_true", help="Use LambdaRank instead of binary classification")
     args = parser.parse_args()
 
     train_model(
@@ -353,6 +558,7 @@ def main():
         optimize=args.optimize,
         n_trials=args.n_trials,
         calibrate=not args.no_calibrate,
+        use_ranking=args.ranking,
     )
 
 

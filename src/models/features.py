@@ -40,6 +40,28 @@ class FeatureEngineering:
         "優": 4,
     }
 
+    # Weather condition encoding
+    WEATHER_ENCODING = {
+        "晴": 0,
+        "曇り": 1,
+        "曇": 1,
+        "雨": 2,
+        "雪": 3,
+        "霧": 4,
+    }
+
+    # Wind direction to degrees (for circular encoding)
+    WIND_DIRECTION_DEGREES = {
+        "北": 0,
+        "北東": 45,
+        "東": 90,
+        "南東": 135,
+        "南": 180,
+        "南西": 225,
+        "西": 270,
+        "北西": 315,
+    }
+
     def __init__(self, n_recent_races: int = 30):
         """
         Args:
@@ -338,11 +360,80 @@ class FeatureEngineering:
                 return value
         return 1  # Default to qualifying race
 
+    def create_weather_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Generate weather features from race-level weather data.
+
+        Features created:
+        - weather_encoded: 0=sunny, 1=cloudy, 2=rain, 3=snow, 4=fog
+        - wind_speed: numeric (meters)
+        - wave_height: numeric (cm)
+        - wind_direction_sin: sin(direction_degrees)
+        - wind_direction_cos: cos(direction_degrees)
+        - wind_wave_interaction: wind_speed * wave_height (rough conditions)
+        - inside_wave_penalty: wave_height * (7 - boat_no) / 6 (inside worse in waves)
+
+        Args:
+            df: DataFrame with weather columns and boat_no
+
+        Returns:
+            DataFrame with weather features added
+        """
+        result = df.copy()
+
+        # Check if weather columns exist
+        if "weather" not in result.columns:
+            # No weather data - use defaults (moderate conditions)
+            result["weather_encoded"] = 1.0  # Cloudy
+            result["wind_speed"] = 0.0
+            result["wave_height"] = 0.0
+            result["wind_direction_sin"] = 0.0
+            result["wind_direction_cos"] = 1.0  # North
+            result["wind_wave_interaction"] = 0.0
+            result["inside_wave_penalty"] = 0.0
+            return result
+
+        # Weather condition encoding
+        result["weather_encoded"] = result["weather"].map(
+            self.WEATHER_ENCODING
+        ).fillna(1).astype(float)  # Default to cloudy
+
+        # Wind direction to sin/cos (circular encoding)
+        wind_degrees = result["wind_direction"].map(
+            self.WIND_DIRECTION_DEGREES
+        ).fillna(0)
+        wind_radians = np.deg2rad(wind_degrees)
+        result["wind_direction_sin"] = np.sin(wind_radians)
+        result["wind_direction_cos"] = np.cos(wind_radians)
+
+        # Numeric features
+        result["wind_speed"] = pd.to_numeric(
+            result["wind_speed"], errors="coerce"
+        ).fillna(0).astype(float)
+        result["wave_height"] = pd.to_numeric(
+            result["wave_height"], errors="coerce"
+        ).fillna(0).astype(float)
+
+        # Interaction features
+        # Wind × wave interaction (rough conditions indicator)
+        result["wind_wave_interaction"] = (
+            result["wind_speed"] * result["wave_height"] / 100.0
+        )
+
+        # Inside lanes are disadvantaged in high waves
+        # boat_no 1 gets highest penalty, boat_no 6 gets lowest
+        result["inside_wave_penalty"] = (
+            result["wave_height"] * (7 - result["boat_no"]) / 600.0
+        )
+
+        return result
+
     def create_all_features(
         self,
         programs_df: pd.DataFrame,
         results_df: pd.DataFrame,
         include_historical: bool = True,
+        weather_df: pd.DataFrame = None,
     ) -> pd.DataFrame:
         """
         Generate all features
@@ -351,6 +442,7 @@ class FeatureEngineering:
             programs_df: Program entry data
             results_df: Race results data
             include_historical: Whether to include historical features
+            weather_df: Race-level weather data (from results_races.csv)
 
         Returns:
             DataFrame of all features
@@ -370,19 +462,35 @@ class FeatureEngineering:
         # Relative features
         features = self.create_relative_features(features)
 
+        # Weather features (merge race-level weather data)
+        if weather_df is not None:
+            weather_cols = ["date", "stadium_code", "race_no",
+                          "weather", "wind_direction", "wind_speed", "wave_height"]
+            weather_subset = weather_df[
+                [c for c in weather_cols if c in weather_df.columns]
+            ].drop_duplicates()
+            features = features.merge(
+                weather_subset,
+                on=["date", "stadium_code", "race_no"],
+                how="left",
+            )
+
+        # Create weather features (even if no weather data - uses defaults)
+        features = self.create_weather_features(features)
+
         return features
 
 
 def get_feature_columns() -> list[str]:
-    """List of feature column names to input to the model"""
+    """List of feature column names to input to the model (50 features total)"""
     return [
-        # Base features
+        # Base features (11)
         "stadium_code",  # Stadium-specific effects
         "national_win_rate", "national_in2_rate",
         "local_win_rate", "local_in2_rate",
         "age", "weight", "class_encoded", "branch_encoded",
         "motor_in2_rate", "boat_in2_rate",
-        # Historical features
+        # Historical features (16)
         "recent_win_rate", "recent_in2_rate", "recent_in3_rate",
         "recent_avg_rank", "recent_avg_st", "recent_race_count",
         "local_recent_win_rate", "local_race_count",
@@ -391,18 +499,26 @@ def get_feature_columns() -> list[str]:
         "st_consistency", "flying_start_rate", "late_start_rate",
         "avg_course_diff", "inside_take_rate",
         "weighted_recent_win",
-        # Relative features
+        # Relative features (5)
         "win_rate_rank", "win_rate_diff_from_avg",
         "motor_rate_rank", "boat_rate_rank",
         "course_advantage",
-        # Exhibition time features
+        # Exhibition time features (3)
         "exhibition_time",
         "exhibition_time_rank",
         "exhibition_time_diff",
-        # Race context features
+        # Race context features (2)
         "race_grade", "is_final",
-        # Interaction features
+        # Interaction features (6)
         "class_x_course", "motor_x_exhibition",
         "equipment_score", "equipment_rank",
         "favorite_score", "upset_potential",
+        # Weather features (7)
+        "weather_encoded",      # 0=sunny, 1=cloudy, 2=rain, 3=snow, 4=fog
+        "wind_speed",           # Wind speed in meters
+        "wave_height",          # Wave height in cm
+        "wind_direction_sin",   # Circular encoding of wind direction
+        "wind_direction_cos",   # Circular encoding of wind direction
+        "wind_wave_interaction",  # wind_speed * wave_height / 100
+        "inside_wave_penalty",    # wave_height * (7 - boat_no) / 600
     ]
