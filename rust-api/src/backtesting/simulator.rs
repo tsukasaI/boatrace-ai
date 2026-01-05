@@ -7,7 +7,7 @@ use super::synthetic::SyntheticOddsGenerator;
 use crate::core::kelly::KellyCalculator;
 use crate::data::{load_exacta_odds, IndexedRaceData, RaceKey};
 use crate::models::RacerEntry;
-use crate::predictor::{FallbackPredictor, Predictor};
+use crate::predictor::{FallbackPredictor, Predictor, RankerPredictor};
 use crate::{ExactaPrediction, PositionProb};
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -353,9 +353,10 @@ impl Default for BacktestConfig {
     }
 }
 
-/// Unified predictor that can use either ONNX or fallback
+/// Unified predictor that can use ONNX binary, ONNX ranker, or fallback
 enum UnifiedPredictor {
     Onnx(Predictor),
+    OnnxRanker(RankerPredictor),
     Fallback(FallbackPredictor),
 }
 
@@ -391,6 +392,13 @@ impl UnifiedPredictor {
                         FallbackPredictor::new().predict_positions(entries)
                     })
             }
+            UnifiedPredictor::OnnxRanker(p) => {
+                p.predict_positions_full(entries, historical, exhibition_times, race_context, stadium_code, weather)
+                    .unwrap_or_else(|e| {
+                        eprintln!("ONNX ranker prediction failed: {}, using fallback", e);
+                        FallbackPredictor::new().predict_positions(entries)
+                    })
+            }
             UnifiedPredictor::Fallback(p) => p.predict_positions(entries),
         }
     }
@@ -398,6 +406,7 @@ impl UnifiedPredictor {
     fn calculate_exacta_probs(&self, position_probs: &[PositionProb]) -> Vec<ExactaPrediction> {
         match self {
             UnifiedPredictor::Onnx(p) => p.calculate_exacta_probs(position_probs),
+            UnifiedPredictor::OnnxRanker(p) => p.calculate_exacta_probs(position_probs),
             UnifiedPredictor::Fallback(p) => p.calculate_exacta_probs(position_probs),
         }
     }
@@ -427,15 +436,43 @@ impl BacktestSimulator {
         };
 
         // Try to load ONNX models if path provided
+        // Detect model type from metadata.json
         let predictor = if let Some(ref model_dir) = config.model_dir {
-            match Predictor::new(model_dir) {
-                Ok(p) => {
-                    eprintln!("Using ONNX predictor from {:?}", model_dir);
-                    UnifiedPredictor::Onnx(p)
+            // Check metadata.json for model_type
+            let metadata_path = model_dir.join("metadata.json");
+            let model_type = if metadata_path.exists() {
+                std::fs::read_to_string(&metadata_path)
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .and_then(|v| v.get("model_type").and_then(|t| t.as_str()).map(String::from))
+                    .unwrap_or_else(|| "binary".to_string())
+            } else {
+                "binary".to_string()
+            };
+
+            if model_type == "lambdarank" {
+                // Load LambdaRank ranker model
+                match RankerPredictor::new(model_dir) {
+                    Ok(p) => {
+                        eprintln!("Using LambdaRank predictor from {:?}", model_dir);
+                        UnifiedPredictor::OnnxRanker(p)
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to load LambdaRank model: {}, using fallback", e);
+                        UnifiedPredictor::Fallback(FallbackPredictor::new())
+                    }
                 }
-                Err(e) => {
-                    eprintln!("Failed to load ONNX models: {}, using fallback", e);
-                    UnifiedPredictor::Fallback(FallbackPredictor::new())
+            } else {
+                // Load binary classifier models
+                match Predictor::new(model_dir) {
+                    Ok(p) => {
+                        eprintln!("Using ONNX binary predictor from {:?}", model_dir);
+                        UnifiedPredictor::Onnx(p)
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to load ONNX models: {}, using fallback", e);
+                        UnifiedPredictor::Fallback(FallbackPredictor::new())
+                    }
                 }
             }
         } else {
