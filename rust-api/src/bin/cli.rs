@@ -6,6 +6,7 @@ use colored::Colorize;
 use dialoguer::{theme::ColorfulTheme, Input, Select};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use boatrace::backtesting::{BacktestConfig, BacktestSimulator};
 use boatrace::core::kelly::KellyCalculator;
@@ -123,6 +124,18 @@ enum Commands {
         /// Maximum odds to bet on (filters out longshots where model is unreliable)
         #[arg(long)]
         max_odds: Option<f64>,
+
+        /// Output format: table (default), json, csv
+        #[arg(long, default_value = "table")]
+        output_format: String,
+
+        /// Output file path (default: stdout)
+        #[arg(short = 'o', long)]
+        output_file: Option<PathBuf>,
+
+        /// Include detailed bet records in output (JSON: adds bets array, CSV: outputs bet-level rows)
+        #[arg(long)]
+        detailed: bool,
     },
 
     /// Scrape odds from boatrace.jp (requires scraper feature)
@@ -263,6 +276,9 @@ fn main() -> Result<()> {
                 synthetic_odds,
                 by_prob,
                 max_odds,
+                output_format,
+                output_file,
+                detailed,
             } => {
                 run_backtest(
                     &cli.data_dir,
@@ -279,6 +295,9 @@ fn main() -> Result<()> {
                     synthetic_odds,
                     by_prob,
                     max_odds,
+                    &output_format,
+                    output_file.as_deref(),
+                    detailed,
                 )?;
             }
             #[cfg(feature = "scraper")]
@@ -735,8 +754,24 @@ fn run_backtest(
     synthetic_odds: bool,
     by_prob: bool,
     max_odds: Option<f64>,
+    output_format: &str,
+    output_file: Option<&Path>,
+    detailed: bool,
 ) -> Result<()> {
-    println!("{}", "Running backtest...".green());
+    use boatrace::backtesting::{BacktestOutput, OutputFormat};
+    use std::fs::File;
+    use std::io::BufWriter;
+
+    // Parse output format
+    let format = OutputFormat::from_str(output_format)
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Only print status messages for table format
+    let is_table = matches!(format, OutputFormat::Table);
+
+    if is_table {
+        println!("{}", "Running backtest...".green());
+    }
 
     let config = BacktestConfig {
         ev_threshold: threshold,
@@ -751,89 +786,143 @@ fn run_backtest(
         max_odds,
     };
 
-    if by_prob {
-        println!("Strategy: Bet on highest probability");
-    } else {
-        println!("EV Threshold: {:.2}", config.ev_threshold);
+    if is_table {
+        if by_prob {
+            println!("Strategy: Bet on highest probability");
+        } else {
+            println!("EV Threshold: {:.2}", config.ev_threshold);
+        }
+        println!("Stake per bet: {}", config.stake);
+        println!("Max bets per race: {}", config.max_bets_per_race);
+        if let Some(start) = config.test_start_date {
+            println!("Test start date: {}", start);
+        } else {
+            println!("Using all data");
+        }
+        if let Some(ref mdir) = model_dir {
+            println!("Model directory: {:?}", mdir);
+        }
+        if synthetic_odds {
+            println!("Synthetic odds: enabled");
+        }
+        if let Some(mo) = max_odds {
+            println!("Max odds: {:.1}", mo);
+        }
+        println!();
     }
-    println!("Stake per bet: {}", config.stake);
-    println!("Max bets per race: {}", config.max_bets_per_race);
-    if let Some(start) = config.test_start_date {
-        println!("Test start date: {}", start);
-    } else {
-        println!("Using all data");
-    }
-    if let Some(ref mdir) = model_dir {
-        println!("Model directory: {:?}", mdir);
-    }
-    if synthetic_odds {
-        println!("Synthetic odds: enabled");
-    }
-    if let Some(mo) = max_odds {
-        println!("Max odds: {:.1}", mo);
-    }
-    println!();
 
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} {msg}")
-            .unwrap(),
-    );
-    pb.set_message("Loading data and running backtest...");
+    let pb = if is_table {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} {msg}")
+                .unwrap(),
+        );
+        pb.set_message("Loading data and running backtest...");
+        Some(pb)
+    } else {
+        None
+    };
 
     let programs_path = data_dir.join("programs_entries.csv");
     let results_path = data_dir.join("results_entries.csv");
 
-    let mut simulator = BacktestSimulator::new(config);
+    let mut simulator = BacktestSimulator::new(config.clone());
 
     let result = simulator
         .run(&programs_path, &results_path, Some(odds_dir))
         .with_context(|| "Backtest failed")?;
 
-    pb.finish_and_clear();
+    if let Some(pb) = pb {
+        pb.finish_and_clear();
+    }
 
-    // Print results
-    simulator.print_summary(&result);
+    // Handle output based on format
+    match format {
+        OutputFormat::Table => {
+            // Print results
+            simulator.print_summary(&result);
 
-    // Additional analysis
-    if !result.bets.is_empty() {
-        println!("\n{}", "Analysis by Stadium:".yellow().bold());
-        let stadium_analysis = boatrace::backtesting::metrics::analyze_by_stadium(&result.bets);
-        println!(
-            "{:>8} {:>8} {:>8} {:>10} {:>12} {:>10}",
-            "Stadium", "Bets", "Wins", "Hit Rate", "Profit", "ROI"
-        );
-        println!("{}", "-".repeat(60));
-        for a in stadium_analysis.iter() {
-            println!(
-                "{:>8} {:>8} {:>8} {:>9.1}% {:>12} {:>9.1}%",
-                stadium_name(a.key.parse().unwrap_or(0)),
-                a.bets,
-                a.wins,
-                a.hit_rate * 100.0,
-                a.profit,
-                a.roi * 100.0
-            );
+            // Additional analysis
+            if !result.bets.is_empty() {
+                println!("\n{}", "Analysis by Stadium:".yellow().bold());
+                let stadium_analysis = boatrace::backtesting::metrics::analyze_by_stadium(&result.bets);
+                println!(
+                    "{:>8} {:>8} {:>8} {:>10} {:>12} {:>10}",
+                    "Stadium", "Bets", "Wins", "Hit Rate", "Profit", "ROI"
+                );
+                println!("{}", "-".repeat(60));
+                for a in stadium_analysis.iter() {
+                    println!(
+                        "{:>8} {:>8} {:>8} {:>9.1}% {:>12} {:>9.1}%",
+                        stadium_name(a.key.parse().unwrap_or(0)),
+                        a.bets,
+                        a.wins,
+                        a.hit_rate * 100.0,
+                        a.profit,
+                        a.roi * 100.0
+                    );
+                }
+
+                println!("\n{}", "Analysis by Odds Range:".yellow().bold());
+                let odds_analysis = boatrace::backtesting::metrics::analyze_by_odds_range(&result.bets);
+                println!(
+                    "{:>12} {:>8} {:>8} {:>10} {:>12} {:>10}",
+                    "Range", "Bets", "Wins", "Hit Rate", "Profit", "ROI"
+                );
+                println!("{}", "-".repeat(65));
+                for a in &odds_analysis {
+                    println!(
+                        "{:>12} {:>8} {:>8} {:>9.1}% {:>12} {:>9.1}%",
+                        a.key,
+                        a.bets,
+                        a.wins,
+                        a.hit_rate * 100.0,
+                        a.profit,
+                        a.roi * 100.0
+                    );
+                }
+            }
         }
-
-        println!("\n{}", "Analysis by Odds Range:".yellow().bold());
-        let odds_analysis = boatrace::backtesting::metrics::analyze_by_odds_range(&result.bets);
-        println!(
-            "{:>12} {:>8} {:>8} {:>10} {:>12} {:>10}",
-            "Range", "Bets", "Wins", "Hit Rate", "Profit", "ROI"
-        );
-        println!("{}", "-".repeat(65));
-        for a in &odds_analysis {
-            println!(
-                "{:>12} {:>8} {:>8} {:>9.1}% {:>12} {:>9.1}%",
-                a.key,
-                a.bets,
-                a.wins,
-                a.hit_rate * 100.0,
-                a.profit,
-                a.roi * 100.0
-            );
+        OutputFormat::Json => {
+            let output = BacktestOutput::from_result(&result, &config, detailed);
+            match output_file {
+                Some(path) => {
+                    let file = File::create(path)
+                        .with_context(|| format!("Failed to create output file: {:?}", path))?;
+                    let mut writer = BufWriter::new(file);
+                    output.write_json(&mut writer)?;
+                    eprintln!("Output written to {:?}", path);
+                }
+                None => {
+                    let mut stdout = std::io::stdout();
+                    output.write_json(&mut stdout)?;
+                }
+            }
+        }
+        OutputFormat::Csv => {
+            let output = BacktestOutput::from_result(&result, &config, detailed);
+            match output_file {
+                Some(path) => {
+                    let file = File::create(path)
+                        .with_context(|| format!("Failed to create output file: {:?}", path))?;
+                    let mut writer = BufWriter::new(file);
+                    if detailed {
+                        BacktestOutput::write_bets_csv(&result.bets, &mut writer)?;
+                    } else {
+                        output.write_summary_csv(&mut writer)?;
+                    }
+                    eprintln!("Output written to {:?}", path);
+                }
+                None => {
+                    let mut stdout = std::io::stdout();
+                    if detailed {
+                        BacktestOutput::write_bets_csv(&result.bets, &mut stdout)?;
+                    } else {
+                        output.write_summary_csv(&mut stdout)?;
+                    }
+                }
+            }
         }
     }
 
@@ -1619,7 +1708,7 @@ fn run_interactive(data_dir: &Path, odds_dir: &Path) -> Result<()> {
                     .interact_text()?;
 
                 println!();
-                run_backtest(data_dir, odds_dir, threshold, 100, 3, Some(20240701), None, false, false, None)?;
+                run_backtest(data_dir, odds_dir, threshold, 100, 3, Some(20240701), None, false, false, None, "table", None, false)?;
                 println!();
             }
             3 => {

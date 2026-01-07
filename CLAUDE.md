@@ -152,6 +152,11 @@ boat backtest --all-data --model-dir ../models/onnx --by-prob
 
 # Custom EV threshold
 boat backtest --all-data --threshold 1.1
+
+# Output formats (table, json, csv)
+boat backtest --all-data --output-format json -o results.json
+boat backtest --all-data --output-format csv -o summary.csv
+boat backtest --all-data --output-format csv --detailed -o bets.csv
 ```
 
 ### Scrape Odds
@@ -374,13 +379,13 @@ The simulator auto-detects model type from `metadata.json` and uses the appropri
 
 ### Medium Priority (Quality of Life)
 
-| ID | Improvement | Impact |
-|----|-------------|--------|
-| M1 | Add `--output-format json\|csv` | Enable automation |
-| M2 | Add date validation | Prevent invalid date errors |
-| M3 | Per-stadium course advantage | Stadium-specific predictions |
-| M4 | Use `tabled` crate | Better table formatting |
-| M5 | TOML config file | Persistent settings |
+| ID | Improvement | Impact | Status |
+|----|-------------|--------|--------|
+| M1 | Add `--output-format json\|csv` | Enable automation | ✅ Done |
+| M2 | Add date validation | Prevent invalid date errors | |
+| M3 | Per-stadium course advantage | Stadium-specific predictions | |
+| M4 | Use `tabled` crate | Better table formatting | |
+| M5 | TOML config file | Persistent settings | |
 
 ### Low Priority
 
