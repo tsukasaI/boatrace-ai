@@ -383,7 +383,7 @@ The simulator auto-detects model type from `metadata.json` and uses the appropri
 |----|-------------|--------|--------|
 | M1 | Add `--output-format json\|csv` | Enable automation | ✅ Done |
 | M2 | Add date validation | Prevent invalid date errors | |
-| M3 | Per-stadium course advantage | Stadium-specific predictions | |
+| M3 | Per-stadium course advantage | Stadium-specific predictions | ⚠️ Regressed (ROI dropped, needs investigation) |
 | M4 | Use `tabled` crate | Better table formatting | |
 | M5 | TOML config file | Persistent settings | |
 
@@ -548,6 +548,33 @@ uv run python scripts/compare_features.py
     "1-2-4": 28.5
   }
 }
+```
+
+### Backtest Output Formats
+
+The backtest command supports three output formats via `--output-format`:
+
+**JSON Output** (`--output-format json`)
+```json
+{
+  "config": { "ev_threshold": 1.0, "stake": 100, ... },
+  "summary": { "total_bets": 345867, "roi": 1.78, ... },
+  "metrics": { "hit_rate": 0.082, "profit_factor": 2.94, ... },
+  "analysis": { "by_stadium": [...], "by_odds_range": [...] },
+  "bets": [...]  // only with --detailed
+}
+```
+
+**CSV Summary** (`--output-format csv`)
+```
+total_races,races_with_bets,total_bets,winning_bets,hit_rate,total_stake,total_payout,total_profit,roi,avg_ev,avg_odds,avg_probability,profit_factor,max_drawdown
+116664,115317,345867,28245,0.0817,34586700,96304150,61717450,1.7844,3.6980,60.57,0.0932,2.9431,13990
+```
+
+**CSV Detailed** (`--output-format csv --detailed`)
+```
+date,stadium_code,race_no,combination,probability,odds,expected_value,stake,actual_first,actual_second,won,profit
+20240715,23,5,1-3,0.080000,12.5,1.0000,100,1,3,true,1150
 ```
 
 ## References

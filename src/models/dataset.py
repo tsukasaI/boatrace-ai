@@ -13,7 +13,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config.settings import PROCESSED_DATA_DIR
-from src.models.features import FeatureEngineering, get_feature_columns
+from src.models.features import FeatureEngineering, StadiumCourseIndex, get_feature_columns
 
 
 class DatasetBuilder:
@@ -200,6 +200,7 @@ class DatasetBuilder:
         data_dir: Path = None,
         include_historical: bool = True,
         for_ranking: bool = False,
+        include_stadium_course: bool = True,
     ) -> dict:
         """
         Build training dataset
@@ -208,6 +209,7 @@ class DatasetBuilder:
             data_dir: Data directory
             include_historical: Whether to include historical features
             for_ranking: Whether to build dataset for LambdaRank training
+            include_stadium_course: Whether to include stadium course features
 
         Returns:
             Dataset dictionary
@@ -218,15 +220,24 @@ class DatasetBuilder:
         # Merge data
         merged_df = self.merge_data(programs_df, results_df, races_df)
 
+        # Build stadium course index if needed
+        stadium_course_index = None
+        if include_stadium_course:
+            stadium_course_index = StadiumCourseIndex()
+            stadium_course_index.build_from_results(results_df, before_date=self.train_end_date)
+            print(f"Built stadium course index with {len(stadium_course_index.stadium_course_stats)} combinations")
+
         # Generate features
         if include_historical:
             # Historical features require all results data
             features_df = self.feature_eng.create_all_features(
-                merged_df, results_df, include_historical=True, weather_df=weather_df
+                merged_df, results_df, include_historical=True, weather_df=weather_df,
+                stadium_course_index=stadium_course_index
             )
         else:
             features_df = self.feature_eng.create_all_features(
-                merged_df, None, include_historical=False, weather_df=weather_df
+                merged_df, None, include_historical=False, weather_df=weather_df,
+                stadium_course_index=stadium_course_index
             )
 
         # Add labels
@@ -235,8 +246,8 @@ class DatasetBuilder:
         # Split data
         train_df, val_df, test_df = self.split_data(features_df)
 
-        # Feature columns
-        feature_cols = get_feature_columns()
+        # Feature columns (match the include_stadium_course flag)
+        feature_cols = get_feature_columns(include_stadium_course=include_stadium_course)
 
         # Fill missing values
         for col in feature_cols:

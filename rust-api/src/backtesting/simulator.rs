@@ -233,6 +233,143 @@ impl IndexedWeatherData {
     }
 }
 
+/// Stadium-course statistics index for O(1) lookups
+pub struct IndexedStadiumCourseStats {
+    /// (stadium, course) -> (wins, in2, total)
+    stadium_course: HashMap<(u8, u8), (u32, u32, u32)>,
+    /// course -> (wins, in2, total) - global stats
+    global_course: HashMap<u8, (u32, u32, u32)>,
+    /// (racer_id, stadium, course) -> (wins, in2, total)
+    racer_stadium_course: HashMap<(u32, u8, u8), (u32, u32, u32)>,
+}
+
+impl IndexedStadiumCourseStats {
+    /// Global course win rates (fallback)
+    const GLOBAL_COURSE_WIN_RATE: [f64; 7] = [0.0, 0.55, 0.14, 0.12, 0.10, 0.06, 0.03];
+    const GLOBAL_COURSE_IN2_RATE: [f64; 7] = [0.0, 0.75, 0.35, 0.30, 0.25, 0.20, 0.15];
+
+    /// Build from results CSV (only uses data before cutoff_date to avoid leakage)
+    pub fn load<P: AsRef<Path>>(csv_path: P, cutoff_date: Option<u32>) -> Result<Self, PolarsError> {
+        let df = CsvReadOptions::default()
+            .try_into_reader_with_file_path(Some(csv_path.as_ref().to_path_buf()))?
+            .finish()?;
+
+        let date_col = df.column("date")?.i64()?;
+        let stadium_col = df.column("stadium_code")?.i64()?;
+        let course_col = df.column("course")?.i64()?;
+        let rank_col = df.column("rank")?.i64()?;
+        let racer_col = df.column("racer_id")?.i64()?;
+
+        let mut stadium_course: HashMap<(u8, u8), (u32, u32, u32)> = HashMap::new();
+        let mut global_course: HashMap<u8, (u32, u32, u32)> = HashMap::new();
+        let mut racer_stadium_course: HashMap<(u32, u8, u8), (u32, u32, u32)> = HashMap::new();
+
+        for i in 0..df.height() {
+            let date = date_col.get(i).unwrap_or(0) as u32;
+
+            // Skip if after cutoff date
+            if let Some(cutoff) = cutoff_date {
+                if date >= cutoff {
+                    continue;
+                }
+            }
+
+            let stadium = stadium_col.get(i).unwrap_or(0) as u8;
+            let course = course_col.get(i).unwrap_or(0) as u8;
+            let rank = rank_col.get(i).unwrap_or(0) as u8;
+            let racer_id = racer_col.get(i).unwrap_or(0) as u32;
+
+            // Skip invalid data
+            if course < 1 || course > 6 || rank < 1 || rank > 6 {
+                continue;
+            }
+
+            let is_win = if rank == 1 { 1 } else { 0 };
+            let is_in2 = if rank <= 2 { 1 } else { 0 };
+
+            // Update stadium-course stats
+            let sc_entry = stadium_course.entry((stadium, course)).or_insert((0, 0, 0));
+            sc_entry.0 += is_win;
+            sc_entry.1 += is_in2;
+            sc_entry.2 += 1;
+
+            // Update global course stats
+            let gc_entry = global_course.entry(course).or_insert((0, 0, 0));
+            gc_entry.0 += is_win;
+            gc_entry.1 += is_in2;
+            gc_entry.2 += 1;
+
+            // Update racer-stadium-course stats
+            let rsc_entry = racer_stadium_course.entry((racer_id, stadium, course)).or_insert((0, 0, 0));
+            rsc_entry.0 += is_win;
+            rsc_entry.1 += is_in2;
+            rsc_entry.2 += 1;
+        }
+
+        Ok(Self {
+            stadium_course,
+            global_course,
+            racer_stadium_course,
+        })
+    }
+
+    /// Get stadium-course win/in2 rates
+    fn get_stadium_course_rates(&self, stadium: u8, course: u8) -> (f64, f64) {
+        if let Some(&(wins, in2, total)) = self.stadium_course.get(&(stadium, course)) {
+            if total >= 10 {
+                return (wins as f64 / total as f64, in2 as f64 / total as f64);
+            }
+        }
+        // Fallback to global
+        let idx = course.min(6) as usize;
+        (Self::GLOBAL_COURSE_WIN_RATE[idx], Self::GLOBAL_COURSE_IN2_RATE[idx])
+    }
+
+    /// Get global course win rate
+    fn get_global_course_win_rate(&self, course: u8) -> f64 {
+        if let Some(&(wins, _, total)) = self.global_course.get(&course) {
+            if total > 0 {
+                return wins as f64 / total as f64;
+            }
+        }
+        Self::GLOBAL_COURSE_WIN_RATE[course.min(6) as usize]
+    }
+
+    /// Get racer-stadium-course rates (win_rate, in2_rate) or (0, 0) if not enough data
+    fn get_racer_stadium_course_rates(&self, racer_id: u32, stadium: u8, course: u8) -> (f64, f64) {
+        if let Some(&(wins, in2, total)) = self.racer_stadium_course.get(&(racer_id, stadium, course)) {
+            if total >= 3 {
+                return (wins as f64 / total as f64, in2 as f64 / total as f64);
+            }
+        }
+        (0.0, 0.0) // No history
+    }
+
+    /// Compute StadiumCourseFeatures for a boat entry
+    pub fn compute_features(&self, stadium: u8, boat_no: u8, racer_id: u32) -> crate::data::StadiumCourseFeatures {
+        // Use boat_no as expected course
+        let course = boat_no;
+
+        let (sc_win, sc_in2) = self.get_stadium_course_rates(stadium, course);
+        let global_win = self.get_global_course_win_rate(course);
+        let advantage_diff = sc_win - global_win;
+        let (racer_win, racer_in2) = self.get_racer_stadium_course_rates(racer_id, stadium, course);
+
+        crate::data::StadiumCourseFeatures {
+            stadium_course_win_rate: sc_win,
+            stadium_course_in2_rate: sc_in2,
+            stadium_course_advantage_diff: advantage_diff,
+            racer_course_win_at_stadium: racer_win,
+            racer_course_in2_at_stadium: racer_in2,
+        }
+    }
+
+    /// Number of stadium-course combinations tracked
+    pub fn len(&self) -> usize {
+        self.stadium_course.len()
+    }
+}
+
 /// Indexed race info with O(1) lookups for race_type
 pub struct IndexedRaceInfo {
     /// race_type indexed by race key
@@ -363,7 +500,7 @@ enum UnifiedPredictor {
 impl UnifiedPredictor {
     #[allow(dead_code)]
     fn predict_positions(&mut self, entries: &[RacerEntry]) -> Vec<PositionProb> {
-        self.predict_positions_full(entries, None, None, None, None, None)
+        self.predict_positions_full(entries, None, None, None, None, None, None)
     }
 
     #[allow(dead_code)]
@@ -372,13 +509,14 @@ impl UnifiedPredictor {
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
     ) -> Vec<PositionProb> {
-        self.predict_positions_full(entries, historical, None, None, None, None)
+        self.predict_positions_full(entries, historical, None, None, None, None, None)
     }
 
     fn predict_positions_full(
         &mut self,
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
+        stadium_course: Option<&[crate::data::StadiumCourseFeatures]>,
         exhibition_times: Option<[f64; 6]>,
         race_context: Option<(f64, f64)>,
         stadium_code: Option<u8>,
@@ -386,14 +524,14 @@ impl UnifiedPredictor {
     ) -> Vec<PositionProb> {
         match self {
             UnifiedPredictor::Onnx(p) => {
-                p.predict_positions_full(entries, historical, exhibition_times, race_context, stadium_code, weather)
+                p.predict_positions_full(entries, historical, stadium_course, exhibition_times, race_context, stadium_code, weather)
                     .unwrap_or_else(|e| {
                         eprintln!("ONNX prediction failed: {}, using fallback", e);
                         FallbackPredictor::new().predict_positions(entries)
                     })
             }
             UnifiedPredictor::OnnxRanker(p) => {
-                p.predict_positions_full(entries, historical, exhibition_times, race_context, stadium_code, weather)
+                p.predict_positions_full(entries, historical, stadium_course, exhibition_times, race_context, stadium_code, weather)
                     .unwrap_or_else(|e| {
                         eprintln!("ONNX ranker prediction failed: {}, using fallback", e);
                         FallbackPredictor::new().predict_positions(entries)
@@ -561,6 +699,12 @@ impl BacktestSimulator {
         let history_index = crate::data::RacerHistoryIndex::load(&results_path)?;
         eprintln!("Loaded history for {} racers", history_index.len());
 
+        // Note: Stadium course features are disabled for 50-feature models
+        // To enable, uncomment below and pass stadium_course_features to predictor
+        // eprintln!("Loading stadium course stats...");
+        // let stadium_course_stats = IndexedStadiumCourseStats::load(&results_path, self.config.test_start_date)?;
+        // eprintln!("Loaded {} stadium-course combinations", stadium_course_stats.len());
+
         let mut result = BacktestResult::new();
 
         // Iterate directly over all races (already indexed)
@@ -632,9 +776,12 @@ impl BacktestSimulator {
             let weather = weather_data.as_ref()
                 .and_then(|wd| wd.get_weather(*date, *stadium_code, *race_no));
             let racer_entries: Vec<_> = entries.iter().map(|e| e.to_racer_entry()).collect();
+
+            // Note: stadium_course is None for 50-feature models (disabled)
             let position_probs = self.predictor.predict_positions_full(
                 &racer_entries,
                 Some(&historical_features),
+                None,  // stadium_course disabled for 50-feature model
                 exhibition_times,
                 race_context,
                 Some(*stadium_code),

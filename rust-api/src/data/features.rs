@@ -116,6 +116,16 @@ pub struct HistoricalFeatures {
     pub weighted_recent_win: f64,
 }
 
+/// Stadium course features (per-stadium course advantage)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StadiumCourseFeatures {
+    pub stadium_course_win_rate: f64,      // Win rate for this course at this stadium
+    pub stadium_course_in2_rate: f64,      // Top-2 rate for this course at this stadium
+    pub stadium_course_advantage_diff: f64, // Difference from global course average
+    pub racer_course_win_at_stadium: f64,  // Racer's win rate on this course at this stadium
+    pub racer_course_in2_at_stadium: f64,  // Racer's top-2 rate on this course at this stadium
+}
+
 /// Race context features
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RaceContextFeatures {

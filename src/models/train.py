@@ -469,6 +469,7 @@ def train_model(
     n_trials: int = 50,
     calibrate: bool = True,
     use_ranking: bool = False,
+    include_stadium_course: bool = True,
 ):
     """
     Main function to train the model
@@ -479,6 +480,7 @@ def train_model(
         n_trials: Number of optimization trials
         calibrate: Whether to apply Platt scaling calibration (binary only)
         use_ranking: Whether to use LambdaRank instead of binary classification
+        include_stadium_course: Whether to include stadium course features
 
     Returns:
         Trained model (BoatracePredictor or BoatraceRanker)
@@ -488,6 +490,7 @@ def train_model(
     dataset = builder.build_dataset(
         include_historical=use_historical,
         for_ranking=use_ranking,
+        include_stadium_course=include_stadium_course,
     )
 
     X_train = dataset["X_train"]
@@ -551,6 +554,7 @@ def main():
     parser.add_argument("--n-trials", type=int, default=50, help="Number of optimization trials")
     parser.add_argument("--no-calibrate", action="store_true", help="Skip Platt scaling calibration")
     parser.add_argument("--ranking", action="store_true", help="Use LambdaRank instead of binary classification")
+    parser.add_argument("--no-stadium-course", action="store_true", help="Exclude stadium course features (use 50 features)")
     args = parser.parse_args()
 
     train_model(
@@ -559,6 +563,7 @@ def main():
         n_trials=args.n_trials,
         calibrate=not args.no_calibrate,
         use_ranking=args.ranking,
+        include_stadium_course=not args.no_stadium_course,
     )
 
 

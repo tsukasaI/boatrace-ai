@@ -11,6 +11,7 @@ use tracing::info;
 const NUM_MODELS: usize = 6;
 /// Number of features expected by the model
 /// Stadium (1) + Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) + Weather (7) = 50
+/// Note: Stadium Course features (+5) are optional and controlled by stadium_course parameter
 const NUM_FEATURES: usize = 50;
 
 /// Model type discriminator
@@ -186,7 +187,7 @@ impl Predictor {
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
     ) -> Result<Vec<PositionProb>, Box<dyn std::error::Error>> {
-        self.predict_positions_full(entries, historical, None, None, None, None)
+        self.predict_positions_full(entries, historical, None, None, None, None, None)
     }
 
     /// Predict position probabilities with all features
@@ -194,6 +195,7 @@ impl Predictor {
     /// # Arguments
     /// * `entries` - 6 racer entries for the race
     /// * `historical` - Optional historical features for each racer (indexed by position)
+    /// * `stadium_course` - Optional stadium course features for each racer
     /// * `exhibition_times` - Optional exhibition times for each boat [boat1_time, ..., boat6_time]
     /// * `race_context` - Optional (race_grade, is_final) tuple
     /// * `stadium_code` - Optional stadium code (1-24) for stadium-specific effects
@@ -202,6 +204,7 @@ impl Predictor {
         &mut self,
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
+        stadium_course: Option<&[crate::data::StadiumCourseFeatures]>,
         exhibition_times: Option<[f64; 6]>,
         race_context: Option<(f64, f64)>,
         stadium_code: Option<u8>,
@@ -211,8 +214,8 @@ impl Predictor {
             return Err("Exactly 6 entries required".into());
         }
 
-        // Create feature matrix (6 boats × 50 features)
-        let features = self.extract_features_full(entries, historical, exhibition_times, race_context, stadium_code, weather);
+        // Create feature matrix (6 boats × 55 features)
+        let features = self.extract_features_full(entries, historical, stadium_course, exhibition_times, race_context, stadium_code, weather);
 
         // Run inference for each position model
         let mut position_probs = vec![[0.0f64; 6]; 6]; // boats × positions
@@ -257,11 +260,12 @@ impl Predictor {
 
     /// Extract features from race entries with optional real historical features and exhibition times
     ///
-    /// Order: Stadium (1) + Base (10) + Historical (16) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) + Weather (7) = 50 features per boat
+    /// Order: Stadium (1) + Base (10) + Historical (16) + Stadium Course (5) + Relative (5) + Exhibition (3) + Context (2) + Interaction (6) + Weather (7) = 55 features per boat
     fn extract_features_full(
         &self,
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
+        stadium_course: Option<&[crate::data::StadiumCourseFeatures]>,
         exhibition_times: Option<[f64; 6]>,
         race_context: Option<(f64, f64)>,
         stadium_code: Option<u8>,
@@ -343,6 +347,27 @@ impl Predictor {
             } else {
                 self.push_proxy_historical_features(entry, &mut features);
             }
+
+            // 2.5. Stadium course features (5) - only include if stadium_course data is provided
+            // For 50-feature models, skip this entirely
+            if let Some(sc_list) = stadium_course {
+                if let Some(sc) = sc_list.get(i) {
+                    features.push(sc.stadium_course_win_rate);
+                    features.push(sc.stadium_course_in2_rate);
+                    features.push(sc.stadium_course_advantage_diff);
+                    features.push(sc.racer_course_win_at_stadium);
+                    features.push(sc.racer_course_in2_at_stadium);
+                } else {
+                    // Fallback: use global course advantage
+                    let course_adv = Self::get_course_advantage(entry.boat_no);
+                    features.push(course_adv);  // stadium_course_win_rate
+                    features.push(course_adv + 0.2);  // stadium_course_in2_rate (approximate)
+                    features.push(0.0);  // stadium_course_advantage_diff
+                    features.push(0.0);  // racer_course_win_at_stadium
+                    features.push(0.0);  // racer_course_in2_at_stadium
+                }
+            }
+            // Note: When stadium_course is None, skip stadium course features entirely (50-feature mode)
 
             // 3. Relative features (5)
             let win_rate_rank = Self::calculate_rank(entries, |e| e.national_win_rate, entry);
@@ -463,7 +488,7 @@ impl Predictor {
     /// Extract features from race entries (proxy historical features)
     #[allow(dead_code)]
     fn extract_features(&self, entries: &[RacerEntry]) -> Vec<f64> {
-        self.extract_features_full(entries, None, None, None, None, None)
+        self.extract_features_full(entries, None, None, None, None, None, None)
     }
 
     /// Encode racer class to numeric value
@@ -685,6 +710,7 @@ impl RankerPredictor {
         &mut self,
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
+        stadium_course: Option<&[crate::data::StadiumCourseFeatures]>,
         exhibition_times: Option<[f64; 6]>,
         race_context: Option<(f64, f64)>,
         stadium_code: Option<u8>,
@@ -695,7 +721,7 @@ impl RankerPredictor {
         }
 
         // Extract features (same as binary predictor)
-        let features = self.extract_features_full(entries, historical, exhibition_times, race_context, stadium_code, weather);
+        let features = self.extract_features_full(entries, historical, stadium_course, exhibition_times, race_context, stadium_code, weather);
 
         // Run inference to get ranking scores
         let input_vec: Vec<f32> = features.iter().map(|&x| x as f32).collect();
@@ -784,6 +810,7 @@ impl RankerPredictor {
         &self,
         entries: &[RacerEntry],
         historical: Option<&[crate::data::HistoricalFeatures]>,
+        stadium_course: Option<&[crate::data::StadiumCourseFeatures]>,
         exhibition_times: Option<[f64; 6]>,
         race_context: Option<(f64, f64)>,
         stadium_code: Option<u8>,
@@ -861,6 +888,26 @@ impl RankerPredictor {
             } else {
                 self.push_proxy_historical_features(entry, &mut features);
             }
+
+            // 2.5. Stadium course features (5) - only include if stadium_course data is provided
+            // For 50-feature models, skip this entirely
+            if let Some(sc_list) = stadium_course {
+                if let Some(sc) = sc_list.get(i) {
+                    features.push(sc.stadium_course_win_rate);
+                    features.push(sc.stadium_course_in2_rate);
+                    features.push(sc.stadium_course_advantage_diff);
+                    features.push(sc.racer_course_win_at_stadium);
+                    features.push(sc.racer_course_in2_at_stadium);
+                } else {
+                    let course_adv = Self::get_course_advantage(entry.boat_no);
+                    features.push(course_adv);
+                    features.push(course_adv + 0.2);
+                    features.push(0.0);
+                    features.push(0.0);
+                    features.push(0.0);
+                }
+            }
+            // Note: When stadium_course is None, skip stadium course features entirely (50-feature mode)
 
             // 3. Relative features (5)
             let win_rate_rank = Self::calculate_rank(entries, |e| e.national_win_rate, entry);

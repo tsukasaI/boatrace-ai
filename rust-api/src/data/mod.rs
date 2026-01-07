@@ -10,7 +10,7 @@ pub mod parser;
 pub use csv_loader::{IndexedRaceData, ProgramEntry, RaceData, RaceKey};
 pub use features::{
     get_all_feature_names, get_base_feature_names, BaseFeatures, FeatureEngineering,
-    HistoricalFeatures, RacerFeatures, RelativeFeatures,
+    HistoricalFeatures, RacerFeatures, RelativeFeatures, StadiumCourseFeatures,
 };
 pub use history::RacerHistoryIndex;
 pub use odds_loader::{load_exacta_odds, load_trifecta_odds};
