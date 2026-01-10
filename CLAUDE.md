@@ -383,9 +383,23 @@ The simulator auto-detects model type from `metadata.json` and uses the appropri
 |----|-------------|--------|--------|
 | M1 | Add `--output-format json\|csv` | Enable automation | ✅ Done |
 | M2 | Add date validation | Prevent invalid date errors | |
-| M3 | Per-stadium course advantage | Stadium-specific predictions | ⚠️ Regressed (ROI dropped, needs investigation) |
+| M3 | Per-stadium course advantage | Stadium-specific predictions | ❌ Abandoned (hurt ROI, see below) |
 | M4 | Use `tabled` crate | Better table formatting | |
 | M5 | TOML config file | Persistent settings | |
+
+### M3 Investigation Results
+
+Stadium course features were tested but **hurt model performance**:
+
+| Model | Features | Best Iteration | NDCG@1 | ROI |
+|-------|----------|----------------|--------|-----|
+| **Baseline** | 50 | 137 | 0.855 | **+178%** |
+| +5 stadium course | 55 | 2 | 0.845 | +10% |
+| +3 stadium course (reduced) | 53 | 13 | 0.846 | +50% |
+
+**Root cause**: `stadium_course_win_rate` has 0.98 correlation with existing `course_advantage` feature. The new features were mostly redundant, causing early stopping (iteration 2-13 vs 137).
+
+**Conclusion**: The existing `course_advantage` feature already captures stadium-specific patterns via learned model weights. Explicit stadium course features add noise without signal.
 
 ### Low Priority
 

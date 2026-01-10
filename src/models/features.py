@@ -721,12 +721,17 @@ class FeatureEngineering:
         return features
 
 
-def get_feature_columns(include_stadium_course: bool = True) -> list[str]:
+def get_feature_columns(include_stadium_course: bool = False) -> list[str]:
     """List of feature column names to input to the model.
 
     Args:
-        include_stadium_course: If True, includes 55 features with stadium course.
-                               If False, returns original 50 features.
+        include_stadium_course: If True, includes 53 features with stadium course.
+                               If False (default), returns 50 features.
+
+    Note:
+        Stadium course features are disabled by default because M3 investigation
+        showed they hurt model performance. The existing course_advantage feature
+        already captures most stadium-specific patterns.
     """
     features = [
         # Base features (11)
@@ -746,12 +751,14 @@ def get_feature_columns(include_stadium_course: bool = True) -> list[str]:
         "weighted_recent_win",
     ]
 
-    # Stadium course features (5) - optional
+    # Stadium course features - optional
+    # Note: Only add unique information, not redundant features
+    # stadium_course_win_rate has 0.98 correlation with course_advantage (redundant)
     if include_stadium_course:
         features.extend([
-            "stadium_course_win_rate",      # Win rate for this course at this stadium
-            "stadium_course_in2_rate",      # Top-2 rate for this course at this stadium
+            # Only add the unique delta from global average (not redundant with course_advantage)
             "stadium_course_advantage_diff", # Difference from global course average
+            # Racer-specific performance at this stadium+course (sparse but potentially valuable)
             "racer_course_win_at_stadium",  # Racer's win rate on this course at this stadium
             "racer_course_in2_at_stadium",  # Racer's top-2 rate on this course at this stadium
         ])
