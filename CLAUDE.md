@@ -266,12 +266,40 @@ position_probs[boat_idx, position_idx]  # P(boat finishes in position)
 P(boat_i=1st, boat_j=2nd) ≈ P(boat_i=1st) × P(boat_j=2nd) / (1 - P(boat_j=1st))
 ```
 
+## Dec-2025 Holdout Validation & Walk-Forward Retrain (2026-05)
+
+The production ranker (`ranker.onnx`) had been trained on **2023 only**. With 2024 (full) and
+Dec 2025 data now available, Dec 2025 is a genuine forward holdout neither the old nor the new
+model trained on. All figures use `--synthetic-odds` (real odds end 2024-12-29) on Dec 2025
+(4,608 races). The old 2023 model is preserved at `models/onnx_2023baseline/` for rollback.
+
+**Old (2023) vs New (≤2024-H1) on the Dec-2025 holdout — measured, not estimated:**
+
+| Strategy | Model | Bets | Hit rate | ROI | Profit factor | Avg odds |
+|----------|-------|------|----------|-----|---------------|----------|
+| by-prob | Old (2023) | 13,731 | 19.93% | +126.5% | 2.58 | 14.6 |
+| by-prob | **New (≤2024-H1)** | 13,731 | 19.93% | **+127.4%** | 2.59 | 14.6 |
+| EV | Old (2023) | 13,728 | 7.58% | +160.0% | 2.73 | 64.9 |
+| EV | **New (≤2024-H1)** | 13,729 | 7.58% | **+163.0%** | 2.76 | 65.2 |
+
+**Conclusion**: The 2023-only model did **not** decay — it held +126% ROI on unseen Dec-2025
+data. Adding 2024 to training improved ROI by <1pp (within noise; the by-prob runs differ by a
+single winning bet). The model is temporally stable; frequent retraining is not required. New
+model val NDCG@1=0.852/@2=0.857/@3=0.885 ≈ baseline (0.855/0.861/0.889).
+
+**Caveats**: (1) Holdout is one month (Dec 2025), not a full year — limited seasonal coverage.
+(2) Synthetic odds inflate ROI vs real odds (see Betting Strategy table below); use these
+numbers for *relative* old-vs-new comparison, not as a real-odds ROI forecast. (3) Stadium-course
+features must stay **off** (50-feature model): a 53-feature retrain early-stopped at iteration 14
+with NDCG@1=0.843, reproducing the documented M3 degradation.
+
 ## Important Notes
 
 1. **Request Interval**: 2+ seconds between requests
 2. **Encoding**: Raw files use CP932 (Shift-JIS)
-3. **Data Split**: 2023 train / 2024-H1 val / 2024-H2 test
-4. **Historical Odds**: boatrace.jp only keeps ~1 week of odds
+3. **Data Split** (walk-forward, default since 2026-05): train ≤ 2024-06-30 (2023 + 2024-H1) / val ≤ 2024-12-31 (2024-H2, early stopping) / test > 2024-12-31. Override with `train.py --train-end-date --val-end-date`. Original split was 2023 / 2024-H1 / 2024-H2.
+4. **Data coverage**: processed CSVs span 2023-01 → 2024-12 (full) plus **2025-12 only** (Dec 2025, ~4,600 races). There is no Jan–Nov 2025 data; "test" in the current split resolves to Dec 2025.
+5. **Historical Odds**: boatrace.jp only keeps ~1 week of odds. Scraped real odds in `data/odds/` end at 2024-12-29, so any backtest on 2025 data must use `--synthetic-odds`.
 
 ## Betting Strategy
 

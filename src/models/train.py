@@ -470,6 +470,8 @@ def train_model(
     calibrate: bool = True,
     use_ranking: bool = False,
     include_stadium_course: bool = True,
+    train_end_date: int = 20240630,
+    val_end_date: int = 20241231,
 ):
     """
     Main function to train the model
@@ -481,12 +483,17 @@ def train_model(
         calibrate: Whether to apply Platt scaling calibration (binary only)
         use_ranking: Whether to use LambdaRank instead of binary classification
         include_stadium_course: Whether to include stadium course features
+        train_end_date: Last date (YYYYMMDD) included in training split
+        val_end_date: Last date (YYYYMMDD) included in validation split
 
     Returns:
         Trained model (BoatracePredictor or BoatraceRanker)
     """
     logger.info("Building dataset...")
-    builder = DatasetBuilder()
+    builder = DatasetBuilder(
+        train_end_date=train_end_date,
+        val_end_date=val_end_date,
+    )
     dataset = builder.build_dataset(
         include_historical=use_historical,
         for_ranking=use_ranking,
@@ -555,6 +562,8 @@ def main():
     parser.add_argument("--no-calibrate", action="store_true", help="Skip Platt scaling calibration")
     parser.add_argument("--ranking", action="store_true", help="Use LambdaRank instead of binary classification")
     parser.add_argument("--no-stadium-course", action="store_true", help="Exclude stadium course features (use 50 features)")
+    parser.add_argument("--train-end-date", type=int, default=20240630, help="Last date (YYYYMMDD) included in training split")
+    parser.add_argument("--val-end-date", type=int, default=20241231, help="Last date (YYYYMMDD) included in validation split (test is everything after)")
     args = parser.parse_args()
 
     train_model(
@@ -564,6 +573,8 @@ def main():
         calibrate=not args.no_calibrate,
         use_ranking=args.ranking,
         include_stadium_course=not args.no_stadium_course,
+        train_end_date=args.train_end_date,
+        val_end_date=args.val_end_date,
     )
 
 
