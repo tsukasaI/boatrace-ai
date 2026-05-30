@@ -2,7 +2,9 @@
 //!
 //! Supports JSON, CSV, and table (terminal) output formats.
 
-use super::metrics::{analyze_by_odds_range, analyze_by_stadium, BacktestMetrics, DimensionAnalysis};
+use super::metrics::{
+    analyze_by_odds_range, analyze_by_stadium, BacktestMetrics, DimensionAnalysis,
+};
 use super::simulator::{BacktestConfig, BacktestResult, BetRecord};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -111,7 +113,11 @@ pub struct BacktestOutput {
 
 impl BacktestOutput {
     /// Create output from backtest result and config
-    pub fn from_result(result: &BacktestResult, config: &BacktestConfig, include_bets: bool) -> Self {
+    pub fn from_result(
+        result: &BacktestResult,
+        config: &BacktestConfig,
+        include_bets: bool,
+    ) -> Self {
         Self {
             config: BacktestConfigOutput::from(config),
             summary: BacktestSummaryOutput::from(result),
@@ -294,7 +300,10 @@ mod tests {
 
     #[test]
     fn test_output_format_from_str() {
-        assert_eq!(OutputFormat::from_str("table").unwrap(), OutputFormat::Table);
+        assert_eq!(
+            OutputFormat::from_str("table").unwrap(),
+            OutputFormat::Table
+        );
         assert_eq!(OutputFormat::from_str("JSON").unwrap(), OutputFormat::Json);
         assert_eq!(OutputFormat::from_str("csv").unwrap(), OutputFormat::Csv);
         assert!(OutputFormat::from_str("invalid").is_err());

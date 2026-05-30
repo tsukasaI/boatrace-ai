@@ -17,8 +17,8 @@ const NUM_FEATURES: usize = 50;
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelType {
-    Binary,      // Legacy 6 binary classifiers
-    LambdaRank,  // Single ranking model
+    Binary,     // Legacy 6 binary classifiers
+    LambdaRank, // Single ranking model
 }
 
 impl Default for ModelType {
@@ -38,11 +38,11 @@ pub struct Calibrator {
 /// Weather features for a race
 #[derive(Debug, Clone, Default)]
 pub struct WeatherFeatures {
-    pub weather_encoded: f64,      // 0=sunny, 1=cloudy, 2=rain, 3=snow, 4=fog
-    pub wind_speed: f64,           // Wind speed in meters
-    pub wave_height: f64,          // Wave height in cm
-    pub wind_direction_sin: f64,   // sin(direction_degrees)
-    pub wind_direction_cos: f64,   // cos(direction_degrees)
+    pub weather_encoded: f64,    // 0=sunny, 1=cloudy, 2=rain, 3=snow, 4=fog
+    pub wind_speed: f64,         // Wind speed in meters
+    pub wave_height: f64,        // Wave height in cm
+    pub wind_direction_sin: f64, // sin(direction_degrees)
+    pub wind_direction_cos: f64, // cos(direction_degrees)
 }
 
 impl WeatherFeatures {
@@ -214,7 +214,14 @@ impl Predictor {
         }
 
         // Create feature matrix (6 boats × 50 features)
-        let features = self.extract_features_full(entries, historical, exhibition_times, race_context, stadium_code, weather);
+        let features = self.extract_features_full(
+            entries,
+            historical,
+            exhibition_times,
+            race_context,
+            stadium_code,
+            weather,
+        );
 
         // Run inference for each position model
         let mut position_probs = vec![[0.0f64; 6]; 6]; // boats × positions
@@ -293,7 +300,8 @@ impl Predictor {
         };
 
         // Calculate exhibition time ranks (lower time = better rank = 1)
-        let mut exh_ranked: Vec<(usize, f64)> = exh_times.iter().enumerate().map(|(i, &t)| (i, t)).collect();
+        let mut exh_ranked: Vec<(usize, f64)> =
+            exh_times.iter().enumerate().map(|(i, &t)| (i, t)).collect();
         exh_ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         let mut exh_ranks = [3.5; 6];
         for (rank, (idx, _)) in exh_ranked.iter().enumerate() {
@@ -385,7 +393,8 @@ impl Predictor {
             // equipment combined score
             let equipment_score = equipment_scores[i];
             // equipment rank in race
-            let equipment_rank = Self::calculate_rank_by_value(&equipment_scores, equipment_scores[i]);
+            let equipment_rank =
+                Self::calculate_rank_by_value(&equipment_scores, equipment_scores[i]);
             // favorite score
             let favorite_score = (class_encoded / 4.0
                 + (7.0 - win_rate_rank) / 6.0
@@ -413,13 +422,13 @@ impl Predictor {
                 features.push(wx.inside_wave_penalty(entry.boat_no));
             } else {
                 // Default weather (calm conditions: cloudy, no wind, no waves)
-                features.push(1.0);  // weather_encoded = cloudy
-                features.push(0.0);  // wind_speed
-                features.push(0.0);  // wave_height
-                features.push(0.0);  // wind_direction_sin
-                features.push(1.0);  // wind_direction_cos (north)
-                features.push(0.0);  // wind_wave_interaction
-                features.push(0.0);  // inside_wave_penalty
+                features.push(1.0); // weather_encoded = cloudy
+                features.push(0.0); // wind_speed
+                features.push(0.0); // wave_height
+                features.push(0.0); // wind_direction_sin
+                features.push(1.0); // wind_direction_cos (north)
+                features.push(0.0); // wind_wave_interaction
+                features.push(0.0); // inside_wave_penalty
             }
         }
 
@@ -457,11 +466,11 @@ impl Predictor {
 
         // 7 new historical features with default values
         features.push(recent_in2_rate); // course_in2_rate (proxy)
-        features.push(0.05);            // st_consistency (default)
-        features.push(0.0);             // flying_start_rate
-        features.push(0.0);             // late_start_rate
-        features.push(0.0);             // avg_course_diff
-        features.push(0.0);             // inside_take_rate
+        features.push(0.05); // st_consistency (default)
+        features.push(0.0); // flying_start_rate
+        features.push(0.0); // late_start_rate
+        features.push(0.0); // avg_course_diff
+        features.push(0.0); // inside_take_rate
         features.push(recent_win_rate); // weighted_recent_win (proxy)
     }
 
@@ -701,7 +710,14 @@ impl RankerPredictor {
         }
 
         // Extract features (same as binary predictor)
-        let features = self.extract_features_full(entries, historical, exhibition_times, race_context, stadium_code, weather);
+        let features = self.extract_features_full(
+            entries,
+            historical,
+            exhibition_times,
+            race_context,
+            stadium_code,
+            weather,
+        );
 
         // Run inference to get ranking scores
         let input_vec: Vec<f32> = features.iter().map(|&x| x as f32).collect();
@@ -714,7 +730,7 @@ impl RankerPredictor {
             let (_, scores_data) = outputs[0].try_extract_tensor::<f32>()?;
             (0..6).map(|i| scores_data[i] as f64).collect()
         };
-        drop(outputs);  // Explicitly drop to release session borrow
+        drop(outputs); // Explicitly drop to release session borrow
 
         // Convert scores to position probabilities via Plackett-Luce
         let position_probs = Self::plackett_luce_probs_static(&scores);
@@ -817,7 +833,8 @@ impl RankerPredictor {
             valid_times.iter().sum::<f64>() / valid_times.len() as f64
         };
 
-        let mut exh_ranked: Vec<(usize, f64)> = exh_times.iter().enumerate().map(|(i, &t)| (i, t)).collect();
+        let mut exh_ranked: Vec<(usize, f64)> =
+            exh_times.iter().enumerate().map(|(i, &t)| (i, t)).collect();
         exh_ranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         let mut exh_ranks = [3.5; 6];
         for (rank, (idx, _)) in exh_ranked.iter().enumerate() {
@@ -904,7 +921,8 @@ impl RankerPredictor {
             let exhibition_score = 7.0 - exhibition_time.clamp(6.5, 7.5);
             let motor_x_exhibition = entry.motor_in2_rate * exhibition_score / 100.0;
             let equipment_score = equipment_scores[i];
-            let equipment_rank = Self::calculate_rank_by_value(&equipment_scores, equipment_scores[i]);
+            let equipment_rank =
+                Self::calculate_rank_by_value(&equipment_scores, equipment_scores[i]);
             let favorite_score = (class_encoded / 4.0
                 + (7.0 - win_rate_rank) / 6.0
                 + (7.0 - equipment_rank) / 6.0
@@ -951,23 +969,27 @@ impl RankerPredictor {
         features.push(recent_in2_rate);
         features.push(recent_in3_rate);
         features.push(recent_avg_rank);
-        features.push(0.15);  // recent_avg_st
-        features.push(30.0);  // recent_race_count
-        features.push(entry.local_win_rate / 100.0);  // local_recent_win_rate
-        features.push(10.0);  // local_race_count
-        features.push(Self::get_course_advantage(entry.boat_no));  // course_win_rate
-        features.push(recent_in2_rate);  // course_in2_rate
-        features.push(0.05);  // st_consistency
-        features.push(0.0);   // flying_start_rate
-        features.push(0.0);   // late_start_rate
-        features.push(0.0);   // avg_course_diff
-        features.push(0.0);   // inside_take_rate
-        features.push(recent_win_rate);  // weighted_recent_win
+        features.push(0.15); // recent_avg_st
+        features.push(30.0); // recent_race_count
+        features.push(entry.local_win_rate / 100.0); // local_recent_win_rate
+        features.push(10.0); // local_race_count
+        features.push(Self::get_course_advantage(entry.boat_no)); // course_win_rate
+        features.push(recent_in2_rate); // course_in2_rate
+        features.push(0.05); // st_consistency
+        features.push(0.0); // flying_start_rate
+        features.push(0.0); // late_start_rate
+        features.push(0.0); // avg_course_diff
+        features.push(0.0); // inside_take_rate
+        features.push(recent_win_rate); // weighted_recent_win
     }
 
     fn encode_class(class: &str) -> f64 {
         match class {
-            "A1" => 4.0, "A2" => 3.0, "B1" => 2.0, "B2" => 1.0, _ => 2.0,
+            "A1" => 4.0,
+            "A2" => 3.0,
+            "B1" => 2.0,
+            "B2" => 1.0,
+            _ => 2.0,
         }
     }
 
@@ -996,7 +1018,13 @@ impl RankerPredictor {
 
     fn get_course_advantage(boat_no: u8) -> f64 {
         match boat_no {
-            1 => 0.55, 2 => 0.14, 3 => 0.12, 4 => 0.10, 5 => 0.06, 6 => 0.03, _ => 0.10,
+            1 => 0.55,
+            2 => 0.14,
+            3 => 0.12,
+            4 => 0.10,
+            5 => 0.06,
+            6 => 0.03,
+            _ => 0.10,
         }
     }
 
@@ -1032,7 +1060,10 @@ impl RankerPredictor {
     }
 
     /// Calculate trifecta probabilities
-    pub fn calculate_trifecta_probs(&self, position_probs: &[PositionProb]) -> Vec<TrifectaPrediction> {
+    pub fn calculate_trifecta_probs(
+        &self,
+        position_probs: &[PositionProb],
+    ) -> Vec<TrifectaPrediction> {
         let mut predictions = Vec::with_capacity(120);
 
         for first in position_probs {

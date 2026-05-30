@@ -186,7 +186,10 @@ mod tests {
         let odds_low = gen_low.get_odds(1, 2);
         let odds_high = gen_high.get_odds(1, 2);
 
-        assert!(odds_low > odds_high, "Higher margin should result in lower odds");
+        assert!(
+            odds_low > odds_high,
+            "Higher margin should result in lower odds"
+        );
     }
 
     #[test]
@@ -194,15 +197,9 @@ mod tests {
         let generator = SyntheticOddsGenerator::default();
 
         // Combinations starting with course 1 should have lower odds
-        let avg_course_1: f64 = (2u8..=6)
-            .map(|s| generator.get_odds(1, s))
-            .sum::<f64>()
-            / 5.0;
+        let avg_course_1: f64 = (2u8..=6).map(|s| generator.get_odds(1, s)).sum::<f64>() / 5.0;
 
-        let avg_course_6: f64 = (1u8..=5)
-            .map(|s| generator.get_odds(6, s))
-            .sum::<f64>()
-            / 5.0;
+        let avg_course_6: f64 = (1u8..=5).map(|s| generator.get_odds(6, s)).sum::<f64>() / 5.0;
 
         assert!(
             avg_course_1 < avg_course_6,

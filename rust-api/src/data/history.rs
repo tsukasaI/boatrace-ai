@@ -17,8 +17,8 @@ pub struct HistoricalRaceEntry {
     pub date: u32,
     pub stadium_code: u8,
     pub race_no: u8,
-    pub course: u8,       // Starting lane 1-6
-    pub rank: u8,         // Finishing position 1-6
+    pub course: u8, // Starting lane 1-6
+    pub rank: u8,   // Finishing position 1-6
     pub start_timing: f64,
 }
 
@@ -46,7 +46,14 @@ impl RacerHistoryIndex {
         let mut history: HashMap<u32, Vec<HistoricalRaceEntry>> = HashMap::new();
 
         for i in 0..df.height() {
-            if let (Some(date), Some(stadium), Some(race), Some(racer_id), Some(rank), Some(course)) = (
+            if let (
+                Some(date),
+                Some(stadium),
+                Some(race),
+                Some(racer_id),
+                Some(rank),
+                Some(course),
+            ) = (
                 date_col.get(i),
                 stadium_col.get(i),
                 race_col.get(i),
@@ -68,10 +75,7 @@ impl RacerHistoryIndex {
                     start_timing: st_col.get(i).unwrap_or(0.15),
                 };
 
-                history
-                    .entry(racer_id as u32)
-                    .or_default()
-                    .push(result);
+                history.entry(racer_id as u32).or_default().push(result);
             }
         }
 
@@ -84,7 +88,12 @@ impl RacerHistoryIndex {
     }
 
     /// Get recent race results for a racer before a given date
-    pub fn get_recent_races(&self, racer_id: u32, before_date: u32, limit: usize) -> Vec<&HistoricalRaceEntry> {
+    pub fn get_recent_races(
+        &self,
+        racer_id: u32,
+        before_date: u32,
+        limit: usize,
+    ) -> Vec<&HistoricalRaceEntry> {
         self.history
             .get(&racer_id)
             .map(|results| {
@@ -134,7 +143,8 @@ impl RacerHistoryIndex {
         } else {
             0.05 // Default
         };
-        let flying_start_rate = st_values.iter().filter(|&&st| st < 0.0).count() as f64 / race_count;
+        let flying_start_rate =
+            st_values.iter().filter(|&&st| st < 0.0).count() as f64 / race_count;
         let late_start_rate = st_values.iter().filter(|&&st| st > 0.20).count() as f64 / race_count;
 
         // Local (stadium-specific) stats
@@ -151,10 +161,7 @@ impl RacerHistoryIndex {
         };
 
         // Course-specific stats (same lane position)
-        let course_races: Vec<_> = recent_races
-            .iter()
-            .filter(|r| r.course == course)
-            .collect();
+        let course_races: Vec<_> = recent_races.iter().filter(|r| r.course == course).collect();
         let course_race_count = course_races.len() as f64;
         let course_wins = course_races.iter().filter(|r| r.rank == 1).count() as f64;
         let course_in2 = course_races.iter().filter(|r| r.rank <= 2).count() as f64;

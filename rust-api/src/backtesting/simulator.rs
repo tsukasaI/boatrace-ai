@@ -149,7 +149,10 @@ impl IndexedResultsData {
             }
         }
 
-        Ok(Self { results, exhibition_times })
+        Ok(Self {
+            results,
+            exhibition_times,
+        })
     }
 
     /// Get race result (1st and 2nd place boats) - O(1)
@@ -158,8 +161,15 @@ impl IndexedResultsData {
     }
 
     /// Get exhibition times for all 6 boats - O(1)
-    pub fn get_exhibition_times(&self, date: u32, stadium_code: u8, race_no: u8) -> Option<[f64; 6]> {
-        self.exhibition_times.get(&(date, stadium_code, race_no)).copied()
+    pub fn get_exhibition_times(
+        &self,
+        date: u32,
+        stadium_code: u8,
+        race_no: u8,
+    ) -> Option<[f64; 6]> {
+        self.exhibition_times
+            .get(&(date, stadium_code, race_no))
+            .copied()
     }
 
     /// Total number of races with results
@@ -197,11 +207,9 @@ impl IndexedWeatherData {
         let mut weather_map: HashMap<RaceKey, (String, String, f64, f64)> = HashMap::new();
 
         for i in 0..df.height() {
-            if let (Some(date), Some(stadium), Some(race)) = (
-                date_col.get(i),
-                stadium_col.get(i),
-                race_col.get(i),
-            ) {
+            if let (Some(date), Some(stadium), Some(race)) =
+                (date_col.get(i), stadium_col.get(i), race_col.get(i))
+            {
                 let weather = weather_col.get(i).unwrap_or("").to_string();
                 let wind_dir = wind_dir_col.get(i).unwrap_or("").to_string();
                 let wind_speed = wind_speed_col.get(i).unwrap_or(0) as f64;
@@ -212,14 +220,23 @@ impl IndexedWeatherData {
             }
         }
 
-        Ok(Self { weather: weather_map })
+        Ok(Self {
+            weather: weather_map,
+        })
     }
 
     /// Get weather features for a race - O(1)
-    pub fn get_weather(&self, date: u32, stadium_code: u8, race_no: u8) -> Option<crate::predictor::WeatherFeatures> {
-        self.weather.get(&(date, stadium_code, race_no)).map(|(weather, wind_dir, wind_speed, wave_height)| {
-            crate::predictor::WeatherFeatures::new(weather, wind_dir, *wind_speed, *wave_height)
-        })
+    pub fn get_weather(
+        &self,
+        date: u32,
+        stadium_code: u8,
+        race_no: u8,
+    ) -> Option<crate::predictor::WeatherFeatures> {
+        self.weather.get(&(date, stadium_code, race_no)).map(
+            |(weather, wind_dir, wind_speed, wave_height)| {
+                crate::predictor::WeatherFeatures::new(weather, wind_dir, *wind_speed, *wave_height)
+            },
+        )
     }
 
     /// Total number of races with weather data
@@ -249,7 +266,10 @@ impl IndexedStadiumCourseStats {
     const GLOBAL_COURSE_IN2_RATE: [f64; 7] = [0.0, 0.75, 0.35, 0.30, 0.25, 0.20, 0.15];
 
     /// Build from results CSV (only uses data before cutoff_date to avoid leakage)
-    pub fn load<P: AsRef<Path>>(csv_path: P, cutoff_date: Option<u32>) -> Result<Self, PolarsError> {
+    pub fn load<P: AsRef<Path>>(
+        csv_path: P,
+        cutoff_date: Option<u32>,
+    ) -> Result<Self, PolarsError> {
         let df = CsvReadOptions::default()
             .try_into_reader_with_file_path(Some(csv_path.as_ref().to_path_buf()))?
             .finish()?;
@@ -300,7 +320,9 @@ impl IndexedStadiumCourseStats {
             gc_entry.2 += 1;
 
             // Update racer-stadium-course stats
-            let rsc_entry = racer_stadium_course.entry((racer_id, stadium, course)).or_insert((0, 0, 0));
+            let rsc_entry = racer_stadium_course
+                .entry((racer_id, stadium, course))
+                .or_insert((0, 0, 0));
             rsc_entry.0 += is_win;
             rsc_entry.1 += is_in2;
             rsc_entry.2 += 1;
@@ -322,7 +344,10 @@ impl IndexedStadiumCourseStats {
         }
         // Fallback to global
         let idx = course.min(6) as usize;
-        (Self::GLOBAL_COURSE_WIN_RATE[idx], Self::GLOBAL_COURSE_IN2_RATE[idx])
+        (
+            Self::GLOBAL_COURSE_WIN_RATE[idx],
+            Self::GLOBAL_COURSE_IN2_RATE[idx],
+        )
     }
 
     /// Get global course win rate
@@ -337,7 +362,9 @@ impl IndexedStadiumCourseStats {
 
     /// Get racer-stadium-course rates (win_rate, in2_rate) or (0, 0) if not enough data
     fn get_racer_stadium_course_rates(&self, racer_id: u32, stadium: u8, course: u8) -> (f64, f64) {
-        if let Some(&(wins, in2, total)) = self.racer_stadium_course.get(&(racer_id, stadium, course)) {
+        if let Some(&(wins, in2, total)) =
+            self.racer_stadium_course.get(&(racer_id, stadium, course))
+        {
             if total >= 3 {
                 return (wins as f64 / total as f64, in2 as f64 / total as f64);
             }
@@ -346,7 +373,12 @@ impl IndexedStadiumCourseStats {
     }
 
     /// Compute StadiumCourseFeatures for a boat entry
-    pub fn compute_features(&self, stadium: u8, boat_no: u8, racer_id: u32) -> crate::data::StadiumCourseFeatures {
+    pub fn compute_features(
+        &self,
+        stadium: u8,
+        boat_no: u8,
+        racer_id: u32,
+    ) -> crate::data::StadiumCourseFeatures {
         // Use boat_no as expected course
         let course = boat_no;
 
@@ -391,11 +423,9 @@ impl IndexedRaceInfo {
         let mut race_types: HashMap<RaceKey, String> = HashMap::new();
 
         for i in 0..df.height() {
-            if let (Some(date), Some(stadium), Some(race)) = (
-                date_col.get(i),
-                stadium_col.get(i),
-                race_col.get(i),
-            ) {
+            if let (Some(date), Some(stadium), Some(race)) =
+                (date_col.get(i), stadium_col.get(i), race_col.get(i))
+            {
                 let race_type = race_type_col.get(i).unwrap_or("").to_string();
                 let key = (date as u32, stadium as u8, race as u8);
                 race_types.insert(key, race_type);
@@ -407,13 +437,17 @@ impl IndexedRaceInfo {
 
     /// Get race_type for a race - O(1)
     pub fn get_race_type(&self, date: u32, stadium_code: u8, race_no: u8) -> Option<&str> {
-        self.race_types.get(&(date, stadium_code, race_no)).map(|s| s.as_str())
+        self.race_types
+            .get(&(date, stadium_code, race_no))
+            .map(|s| s.as_str())
     }
 
     /// Encode race_type to (race_grade, is_final)
     /// Matches Python RACE_TYPE_ENCODING iteration order exactly
     pub fn encode_race_context(&self, date: u32, stadium_code: u8, race_no: u8) -> (f64, f64) {
-        let race_type = self.get_race_type(date, stadium_code, race_no).unwrap_or("");
+        let race_type = self
+            .get_race_type(date, stadium_code, race_no)
+            .unwrap_or("");
 
         // race_grade encoding - must match Python dict iteration order:
         // {"予選": 1, "一般": 1, "特選": 2, "選抜": 2, "準優": 3, "準優勝戦": 3, "優勝戦": 4, "優": 4}
@@ -523,20 +557,34 @@ impl UnifiedPredictor {
         weather: Option<&crate::predictor::WeatherFeatures>,
     ) -> Vec<PositionProb> {
         match self {
-            UnifiedPredictor::Onnx(p) => {
-                p.predict_positions_full(entries, historical, stadium_course, exhibition_times, race_context, stadium_code, weather)
-                    .unwrap_or_else(|e| {
-                        eprintln!("ONNX prediction failed: {}, using fallback", e);
-                        FallbackPredictor::new().predict_positions(entries)
-                    })
-            }
-            UnifiedPredictor::OnnxRanker(p) => {
-                p.predict_positions_full(entries, historical, stadium_course, exhibition_times, race_context, stadium_code, weather)
-                    .unwrap_or_else(|e| {
-                        eprintln!("ONNX ranker prediction failed: {}, using fallback", e);
-                        FallbackPredictor::new().predict_positions(entries)
-                    })
-            }
+            UnifiedPredictor::Onnx(p) => p
+                .predict_positions_full(
+                    entries,
+                    historical,
+                    stadium_course,
+                    exhibition_times,
+                    race_context,
+                    stadium_code,
+                    weather,
+                )
+                .unwrap_or_else(|e| {
+                    eprintln!("ONNX prediction failed: {}, using fallback", e);
+                    FallbackPredictor::new().predict_positions(entries)
+                }),
+            UnifiedPredictor::OnnxRanker(p) => p
+                .predict_positions_full(
+                    entries,
+                    historical,
+                    stadium_course,
+                    exhibition_times,
+                    race_context,
+                    stadium_code,
+                    weather,
+                )
+                .unwrap_or_else(|e| {
+                    eprintln!("ONNX ranker prediction failed: {}, using fallback", e);
+                    FallbackPredictor::new().predict_positions(entries)
+                }),
             UnifiedPredictor::Fallback(p) => p.predict_positions(entries),
         }
     }
@@ -582,7 +630,11 @@ impl BacktestSimulator {
                 std::fs::read_to_string(&metadata_path)
                     .ok()
                     .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                    .and_then(|v| v.get("model_type").and_then(|t| t.as_str()).map(String::from))
+                    .and_then(|v| {
+                        v.get("model_type")
+                            .and_then(|t| t.as_str())
+                            .map(String::from)
+                    })
                     .unwrap_or_else(|| "binary".to_string())
             } else {
                 "binary".to_string()
@@ -653,7 +705,9 @@ impl BacktestSimulator {
         eprintln!("Loaded {} races from results", results_data.len());
 
         // Load race info for race_type
-        let races_path = programs_path.as_ref().parent()
+        let races_path = programs_path
+            .as_ref()
+            .parent()
             .map(|p| p.join("programs_races.csv"))
             .unwrap_or_else(|| PathBuf::from("programs_races.csv"));
         let race_info = if races_path.exists() {
@@ -674,7 +728,9 @@ impl BacktestSimulator {
         };
 
         // Load weather data from results_races.csv
-        let results_races_path = results_path.as_ref().parent()
+        let results_races_path = results_path
+            .as_ref()
+            .parent()
             .map(|p| p.join("results_races.csv"))
             .unwrap_or_else(|| PathBuf::from("results_races.csv"));
         let weather_data = if results_races_path.exists() {
@@ -760,20 +816,23 @@ impl BacktestSimulator {
                 .collect();
 
             // Get exhibition times from results data
-            let exhibition_times = results_data.get_exhibition_times(*date, *stadium_code, *race_no);
+            let exhibition_times =
+                results_data.get_exhibition_times(*date, *stadium_code, *race_no);
 
             // Get race context (race_grade, is_final) from race info
             // Only use real race context when using real odds (not synthetic)
             // Synthetic odds don't reflect race context, causing EV mismatch
             let race_context = if self.synthetic_odds.is_none() {
-                race_info.as_ref()
+                race_info
+                    .as_ref()
                     .map(|info| info.encode_race_context(*date, *stadium_code, *race_no))
             } else {
                 None // Use defaults (1.0, 0.0) for synthetic odds
             };
 
             // Run prediction with historical features, exhibition times, race context, stadium, and weather
-            let weather = weather_data.as_ref()
+            let weather = weather_data
+                .as_ref()
                 .and_then(|wd| wd.get_weather(*date, *stadium_code, *race_no));
             let racer_entries: Vec<_> = entries.iter().map(|e| e.to_racer_entry()).collect();
 
@@ -781,7 +840,7 @@ impl BacktestSimulator {
             let position_probs = self.predictor.predict_positions_full(
                 &racer_entries,
                 Some(&historical_features),
-                None,  // stadium_course disabled for 50-feature model
+                None, // stadium_course disabled for 50-feature model
                 exhibition_times,
                 race_context,
                 Some(*stadium_code),
@@ -823,9 +882,11 @@ impl BacktestSimulator {
 
             // Sort by probability (if by_prob) or EV (default) descending
             if self.config.bet_by_probability {
-                value_bets.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+                value_bets
+                    .sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
             } else {
-                value_bets.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
+                value_bets
+                    .sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
             }
 
             // Limit to max bets per race
@@ -926,13 +987,21 @@ impl BacktestSimulator {
             // Group by odds ranges
             let mut odds_bins: [(usize, usize, i64, i64); 5] = [(0, 0, 0, 0); 5]; // count, wins, stake, profit
             for bet in &result.bets {
-                let bin = if bet.odds < 10.0 { 0 }
-                    else if bet.odds < 30.0 { 1 }
-                    else if bet.odds < 100.0 { 2 }
-                    else if bet.odds < 300.0 { 3 }
-                    else { 4 };
+                let bin = if bet.odds < 10.0 {
+                    0
+                } else if bet.odds < 30.0 {
+                    1
+                } else if bet.odds < 100.0 {
+                    2
+                } else if bet.odds < 300.0 {
+                    3
+                } else {
+                    4
+                };
                 odds_bins[bin].0 += 1;
-                if bet.won { odds_bins[bin].1 += 1; }
+                if bet.won {
+                    odds_bins[bin].1 += 1;
+                }
                 odds_bins[bin].2 += bet.stake;
                 odds_bins[bin].3 += bet.profit;
             }
@@ -941,15 +1010,27 @@ impl BacktestSimulator {
             for (i, label) in labels.iter().enumerate() {
                 let (count, wins, stake, profit) = odds_bins[i];
                 if count > 0 {
-                    let roi = if stake > 0 { profit as f64 / stake as f64 * 100.0 } else { 0.0 };
-                    println!("  Odds {}: {} bets, {} wins ({:.1}%), ROI: {:+.1}%",
-                        label, count, wins, wins as f64 / count as f64 * 100.0, roi);
+                    let roi = if stake > 0 {
+                        profit as f64 / stake as f64 * 100.0
+                    } else {
+                        0.0
+                    };
+                    println!(
+                        "  Odds {}: {} bets, {} wins ({:.1}%), ROI: {:+.1}%",
+                        label,
+                        count,
+                        wins,
+                        wins as f64 / count as f64 * 100.0,
+                        roi
+                    );
                 }
             }
 
             // Average probability and odds
-            let avg_prob: f64 = result.bets.iter().map(|b| b.probability).sum::<f64>() / result.bets.len() as f64;
-            let avg_odds: f64 = result.bets.iter().map(|b| b.odds).sum::<f64>() / result.bets.len() as f64;
+            let avg_prob: f64 =
+                result.bets.iter().map(|b| b.probability).sum::<f64>() / result.bets.len() as f64;
+            let avg_odds: f64 =
+                result.bets.iter().map(|b| b.odds).sum::<f64>() / result.bets.len() as f64;
             println!("\n  Avg probability: {:.2}%", avg_prob * 100.0);
             println!("  Avg odds: {:.1}", avg_odds);
         }

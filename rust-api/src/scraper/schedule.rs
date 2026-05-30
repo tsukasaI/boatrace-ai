@@ -50,8 +50,8 @@ pub fn parse_schedule(html: &str, date: u32) -> Result<TodaySchedule, ScraperErr
         .map_err(|e| ScraperError::ParseError(e.to_string()))?;
 
     // Alternative: look for stadium cards/links
-    let stadium_link_selector = Selector::parse("a[href*='jcd=']")
-        .map_err(|e| ScraperError::ParseError(e.to_string()))?;
+    let stadium_link_selector =
+        Selector::parse("a[href*='jcd=']").map_err(|e| ScraperError::ParseError(e.to_string()))?;
 
     // Try table-based parsing first
     for row in document.select(&table_selector) {
@@ -132,7 +132,8 @@ fn parse_stadium_row(row: &scraper::ElementRef) -> Option<ActiveStadium> {
         }
 
         // Look for event/grade info
-        if text.contains("SG") || text.contains("G1") || text.contains("G2") || text.contains("G3") {
+        if text.contains("SG") || text.contains("G1") || text.contains("G2") || text.contains("G3")
+        {
             grade = Some(text.clone());
         }
     }
@@ -181,7 +182,13 @@ fn extract_race_number(text: &str) -> Option<u8> {
                 }
             }
             // Try "R8" format (number after R)
-            if let Ok(num) = parts[1].trim().chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u8>() {
+            if let Ok(num) = parts[1]
+                .trim()
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u8>()
+            {
                 if (1..=12).contains(&num) {
                     return Some(num);
                 }

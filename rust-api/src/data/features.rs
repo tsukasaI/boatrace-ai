@@ -87,9 +87,9 @@ impl Default for ExhibitionFeatures {
     /// Default values when exhibition time is not available
     fn default() -> Self {
         Self {
-            exhibition_time: 6.80,      // Average exhibition time
-            exhibition_time_rank: 3.5,  // Middle rank
-            exhibition_time_diff: 0.0,  // No difference from average
+            exhibition_time: 6.80,     // Average exhibition time
+            exhibition_time_rank: 3.5, // Middle rank
+            exhibition_time_diff: 0.0, // No difference from average
         }
     }
 }
@@ -119,29 +119,29 @@ pub struct HistoricalFeatures {
 /// Stadium course features (per-stadium course advantage)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StadiumCourseFeatures {
-    pub stadium_course_win_rate: f64,      // Win rate for this course at this stadium
-    pub stadium_course_in2_rate: f64,      // Top-2 rate for this course at this stadium
+    pub stadium_course_win_rate: f64, // Win rate for this course at this stadium
+    pub stadium_course_in2_rate: f64, // Top-2 rate for this course at this stadium
     pub stadium_course_advantage_diff: f64, // Difference from global course average
-    pub racer_course_win_at_stadium: f64,  // Racer's win rate on this course at this stadium
-    pub racer_course_in2_at_stadium: f64,  // Racer's top-2 rate on this course at this stadium
+    pub racer_course_win_at_stadium: f64, // Racer's win rate on this course at this stadium
+    pub racer_course_in2_at_stadium: f64, // Racer's top-2 rate on this course at this stadium
 }
 
 /// Race context features
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RaceContextFeatures {
-    pub race_grade: f64,  // 1=qualifying, 2=semi, 3=semi-final, 4=final
-    pub is_final: f64,    // 1 if race_grade >= 3, else 0
+    pub race_grade: f64, // 1=qualifying, 2=semi, 3=semi-final, 4=final
+    pub is_final: f64,   // 1 if race_grade >= 3, else 0
 }
 
 /// Interaction features (combinations of base features)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct InteractionFeatures {
-    pub class_x_course: f64,      // class_encoded * course_advantage
-    pub motor_x_exhibition: f64,  // motor_in2_rate * exhibition_score / 100
-    pub equipment_score: f64,     // (motor_in2_rate + boat_in2_rate) / 2
-    pub equipment_rank: f64,      // rank within race (1=best)
-    pub favorite_score: f64,      // combined strength indicator
-    pub upset_potential: f64,     // high class but outside course
+    pub class_x_course: f64,     // class_encoded * course_advantage
+    pub motor_x_exhibition: f64, // motor_in2_rate * exhibition_score / 100
+    pub equipment_score: f64,    // (motor_in2_rate + boat_in2_rate) / 2
+    pub equipment_rank: f64,     // rank within race (1=best)
+    pub favorite_score: f64,     // combined strength indicator
+    pub upset_potential: f64,    // high class but outside course
 }
 
 /// Complete feature set for a single entry
@@ -346,24 +346,29 @@ impl FeatureEngineering {
         };
 
         // Calculate interaction features
-        let interaction_features =
-            Self::create_interaction_features(&base_features, &relative_features, &exhibition_features);
+        let interaction_features = Self::create_interaction_features(
+            &base_features,
+            &relative_features,
+            &exhibition_features,
+        );
 
         base_features
             .into_iter()
             .zip(relative_features)
             .zip(exhibition_features)
             .zip(interaction_features)
-            .map(|(((base, relative), exhibition), interaction)| RacerFeatures {
-                boat_no: base.boat_no,
-                racer_id: base.racer_id,
-                base,
-                relative,
-                historical: None,
-                exhibition,
-                context: RaceContextFeatures::default(), // Set separately if race_type available
-                interaction,
-            })
+            .map(
+                |(((base, relative), exhibition), interaction)| RacerFeatures {
+                    boat_no: base.boat_no,
+                    racer_id: base.racer_id,
+                    base,
+                    relative,
+                    historical: None,
+                    exhibition,
+                    context: RaceContextFeatures::default(), // Set separately if race_type available
+                    interaction,
+                },
+            )
             .collect()
     }
 
@@ -384,8 +389,11 @@ impl FeatureEngineering {
             .collect();
 
         // Sort for ranking (higher is better)
-        let mut equip_order: Vec<(usize, f64)> =
-            equipment_scores.iter().enumerate().map(|(i, &s)| (i, s)).collect();
+        let mut equip_order: Vec<(usize, f64)> = equipment_scores
+            .iter()
+            .enumerate()
+            .map(|(i, &s)| (i, s))
+            .collect();
         equip_order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         let mut equipment_ranks = vec![0.0; base_features.len()];

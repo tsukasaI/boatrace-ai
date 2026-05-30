@@ -310,7 +310,15 @@ fn main() -> Result<()> {
                 delay,
                 list_stadiums,
             } => {
-                run_scrape(&cli.odds_dir, date, stadium, race, trifecta, delay, list_stadiums)?;
+                run_scrape(
+                    &cli.odds_dir,
+                    date,
+                    stadium,
+                    race,
+                    trifecta,
+                    delay,
+                    list_stadiums,
+                )?;
             }
             #[cfg(feature = "scraper")]
             Commands::Today {
@@ -768,8 +776,7 @@ fn run_backtest(
     use std::io::BufWriter;
 
     // Parse output format
-    let format = OutputFormat::from_str(output_format)
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let format = OutputFormat::from_str(output_format).map_err(|e| anyhow::anyhow!(e))?;
 
     // Validate test_start date if provided
     if let Some(date) = test_start {
@@ -856,7 +863,8 @@ fn run_backtest(
             // Additional analysis
             if !result.bets.is_empty() {
                 println!("\n{}", "Analysis by Stadium:".yellow().bold());
-                let stadium_analysis = boatrace::backtesting::metrics::analyze_by_stadium(&result.bets);
+                let stadium_analysis =
+                    boatrace::backtesting::metrics::analyze_by_stadium(&result.bets);
                 println!(
                     "{:>8} {:>8} {:>8} {:>10} {:>12} {:>10}",
                     "Stadium", "Bets", "Wins", "Hit Rate", "Profit", "ROI"
@@ -875,7 +883,8 @@ fn run_backtest(
                 }
 
                 println!("\n{}", "Analysis by Odds Range:".yellow().bold());
-                let odds_analysis = boatrace::backtesting::metrics::analyze_by_odds_range(&result.bets);
+                let odds_analysis =
+                    boatrace::backtesting::metrics::analyze_by_odds_range(&result.bets);
                 println!(
                     "{:>12} {:>8} {:>8} {:>10} {:>12} {:>10}",
                     "Range", "Bets", "Wins", "Hit Rate", "Profit", "ROI"
@@ -1242,11 +1251,7 @@ fn run_today(
                 {
                     Ok(info) => Some(info),
                     Err(e) => {
-                        tracing::warn!(
-                            "Failed to get entries for R{}: {}",
-                            race_no,
-                            e
-                        );
+                        tracing::warn!("Failed to get entries for R{}: {}", race_no, e);
                         None
                     }
                 }
@@ -1280,10 +1285,8 @@ fn run_today(
                     let _ = rt.block_on(async {
                         match scraper.scrape_trifecta(date, stadium.code, *race_no).await {
                             Ok(odds) => {
-                                let filename = format!(
-                                    "{}_{:02}_{:02}_3t.json",
-                                    date, stadium.code, race_no
-                                );
+                                let filename =
+                                    format!("{}_{:02}_{:02}_3t.json", date, stadium.code, race_no);
                                 let filepath = odds_dir.join(&filename);
                                 let json = serde_json::to_string_pretty(&odds)?;
                                 std::fs::write(&filepath, json)?;
@@ -1318,7 +1321,8 @@ fn run_today(
 
             // Sort by probability or EV
             if by_prob {
-                predictions.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+                predictions
+                    .sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
             } else {
                 predictions.sort_by(|a, b| {
                     let ev_a = a.4.unwrap_or(0.0);
@@ -1336,11 +1340,7 @@ fn run_today(
 
             // Print top predictions
             let sort_method = if by_prob { "probability" } else { "EV" };
-            println!(
-                "  Top {} by {}:",
-                top,
-                sort_method
-            );
+            println!("  Top {} by {}:", top, sort_method);
             println!(
                 "  {:>8} {:>10} {:>8} {:>8} {:>10}",
                 "Combo", "Prob", "Odds", "EV", "Stake"
@@ -1349,8 +1349,12 @@ fn run_today(
 
             for (first, second, prob, odds, ev) in predictions.iter().take(top) {
                 let combo = format!("{}-{}", first, second);
-                let odds_str = odds.map(|o| format!("{:.1}", o)).unwrap_or_else(|| "-".to_string());
-                let ev_str = ev.map(|e| format!("{:.2}", e)).unwrap_or_else(|| "-".to_string());
+                let odds_str = odds
+                    .map(|o| format!("{:.1}", o))
+                    .unwrap_or_else(|| "-".to_string());
+                let ev_str = ev
+                    .map(|e| format!("{:.2}", e))
+                    .unwrap_or_else(|| "-".to_string());
 
                 let is_value = ev.map(|e| e >= threshold).unwrap_or(false);
                 let stake = if is_value {
@@ -1460,7 +1464,13 @@ fn run_parse(input_dir: &Path, output_dir: &Path, data_type: &str) -> Result<()>
             let mut all_entries: Vec<serde_json::Value> = Vec::new();
 
             for txt_path in &txt_files {
-                pb.set_message(txt_path.file_name().unwrap_or_default().to_string_lossy().to_string());
+                pb.set_message(
+                    txt_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string(),
+                );
 
                 match parser.parse_file(txt_path) {
                     Ok(races) => {
@@ -1499,7 +1509,12 @@ fn run_parse(input_dir: &Path, output_dir: &Path, data_type: &str) -> Result<()>
                         }
                     }
                     Err(e) => {
-                        pb.println(format!("{} {:?}: {}", "Warning".yellow(), txt_path.file_name().unwrap_or_default(), e));
+                        pb.println(format!(
+                            "{} {:?}: {}",
+                            "Warning".yellow(),
+                            txt_path.file_name().unwrap_or_default(),
+                            e
+                        ));
                     }
                 }
                 pb.inc(1);
@@ -1516,7 +1531,10 @@ fn run_parse(input_dir: &Path, output_dir: &Path, data_type: &str) -> Result<()>
             // Write entries CSV
             if !all_entries.is_empty() {
                 write_json_as_csv(&all_entries, &output_dir.join("programs_entries.csv"))?;
-                println!("Saved {} entries to programs_entries.csv", all_entries.len());
+                println!(
+                    "Saved {} entries to programs_entries.csv",
+                    all_entries.len()
+                );
             }
         }
         "results" => {
@@ -1525,7 +1543,13 @@ fn run_parse(input_dir: &Path, output_dir: &Path, data_type: &str) -> Result<()>
             let mut all_entries: Vec<serde_json::Value> = Vec::new();
 
             for txt_path in &txt_files {
-                pb.set_message(txt_path.file_name().unwrap_or_default().to_string_lossy().to_string());
+                pb.set_message(
+                    txt_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string(),
+                );
 
                 match parser.parse_file(txt_path) {
                     Ok(races) => {
@@ -1555,7 +1579,12 @@ fn run_parse(input_dir: &Path, output_dir: &Path, data_type: &str) -> Result<()>
                         }
                     }
                     Err(e) => {
-                        pb.println(format!("{} {:?}: {}", "Warning".yellow(), txt_path.file_name().unwrap_or_default(), e));
+                        pb.println(format!(
+                            "{} {:?}: {}",
+                            "Warning".yellow(),
+                            txt_path.file_name().unwrap_or_default(),
+                            e
+                        ));
                     }
                 }
                 pb.inc(1);
@@ -1578,7 +1607,13 @@ fn run_parse(input_dir: &Path, output_dir: &Path, data_type: &str) -> Result<()>
             let mut all_payouts: Vec<PayoutRecord> = Vec::new();
 
             for txt_path in &txt_files {
-                pb.set_message(txt_path.file_name().unwrap_or_default().to_string_lossy().to_string());
+                pb.set_message(
+                    txt_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string(),
+                );
 
                 match parser.parse_file(txt_path) {
                     Ok(payouts) => {
@@ -1587,7 +1622,12 @@ fn run_parse(input_dir: &Path, output_dir: &Path, data_type: &str) -> Result<()>
                         }
                     }
                     Err(e) => {
-                        pb.println(format!("{} {:?}: {}", "Warning".yellow(), txt_path.file_name().unwrap_or_default(), e));
+                        pb.println(format!(
+                            "{} {:?}: {}",
+                            "Warning".yellow(),
+                            txt_path.file_name().unwrap_or_default(),
+                            e
+                        ));
                     }
                 }
                 pb.inc(1);
@@ -1605,7 +1645,10 @@ fn run_parse(input_dir: &Path, output_dir: &Path, data_type: &str) -> Result<()>
             }
         }
         _ => {
-            anyhow::bail!("Unknown data type: {}. Use 'programs', 'results', or 'payouts'", data_type);
+            anyhow::bail!(
+                "Unknown data type: {}. Use 'programs', 'results', or 'payouts'",
+                data_type
+            );
         }
     }
 
@@ -1719,7 +1762,21 @@ fn run_interactive(data_dir: &Path, odds_dir: &Path) -> Result<()> {
                     .interact_text()?;
 
                 println!();
-                run_backtest(data_dir, odds_dir, threshold, 100, 3, Some(20240701), None, false, false, None, "table", None, false)?;
+                run_backtest(
+                    data_dir,
+                    odds_dir,
+                    threshold,
+                    100,
+                    3,
+                    Some(20240701),
+                    None,
+                    false,
+                    false,
+                    None,
+                    "table",
+                    None,
+                    false,
+                )?;
                 println!();
             }
             3 => {

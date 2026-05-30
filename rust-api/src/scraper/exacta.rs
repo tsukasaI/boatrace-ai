@@ -16,8 +16,8 @@ pub fn parse_exacta_odds(html: &str) -> Result<HashMap<(u8, u8), f64>, ScraperEr
     let mut odds: HashMap<(u8, u8), f64> = HashMap::new();
 
     // Find the 2連単オッズ section
-    let title_selector =
-        Selector::parse("span.title7_mainLabel").map_err(|e| ScraperError::ParseError(e.to_string()))?;
+    let title_selector = Selector::parse("span.title7_mainLabel")
+        .map_err(|e| ScraperError::ParseError(e.to_string()))?;
 
     let mut found_title = false;
     for element in document.select(&title_selector) {
@@ -115,7 +115,9 @@ fn get_boat_number_from_element(element: &scraper::ElementRef) -> Option<u8> {
 
     for class in classes {
         for i in 1..=6 {
-            if class.contains(&format!("is-boatColor{}", i)) || class == format!("is-boatColor{}", i) {
+            if class.contains(&format!("is-boatColor{}", i))
+                || class == format!("is-boatColor{}", i)
+            {
                 return Some(i);
             }
         }

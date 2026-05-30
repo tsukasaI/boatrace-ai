@@ -50,8 +50,8 @@ pub fn parse_race_entries(
 
     // Each boat is in a separate tbody with class is-fs12
     // Look for tbody elements and find boat numbers via is-boatColor classes
-    let tbody_selector = Selector::parse("tbody.is-fs12")
-        .map_err(|e| ScraperError::ParseError(e.to_string()))?;
+    let tbody_selector =
+        Selector::parse("tbody.is-fs12").map_err(|e| ScraperError::ParseError(e.to_string()))?;
 
     let boat_cell_selector = Selector::parse("td[class*='is-boatColor'][class*='is-fs14']")
         .map_err(|e| ScraperError::ParseError(e.to_string()))?;
@@ -285,12 +285,10 @@ fn extract_numbers(text: &str) -> Vec<f64> {
 fn extract_race_name(document: &Html) -> Option<String> {
     let selector = Selector::parse("h2.heading2_titleName, span.heading2_titleName").ok()?;
 
-    document.select(&selector).next().map(|el| {
-        el.text()
-            .collect::<String>()
-            .trim()
-            .to_string()
-    })
+    document
+        .select(&selector)
+        .next()
+        .map(|el| el.text().collect::<String>().trim().to_string())
 }
 
 /// Extract start time from document

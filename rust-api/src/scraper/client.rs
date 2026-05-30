@@ -1,8 +1,8 @@
 //! HTTP client with rate limiting for boatrace.jp
 
 use super::{
-    parse_exacta_odds, parse_race_entries, parse_schedule, parse_trifecta_odds,
-    ScrapedExactaOdds, ScrapedRaceInfo, ScrapedTrifectaOdds, TodaySchedule,
+    parse_exacta_odds, parse_race_entries, parse_schedule, parse_trifecta_odds, ScrapedExactaOdds,
+    ScrapedRaceInfo, ScrapedTrifectaOdds, TodaySchedule,
 };
 use chrono::Utc;
 use std::collections::HashMap;
@@ -101,7 +101,10 @@ impl OddsScraper {
             BASE_URL_EXACTA
         };
 
-        format!("{}?rno={}&jcd={:02}&hd={}", base, race_no, stadium_code, date)
+        format!(
+            "{}?rno={}&jcd={:02}&hd={}",
+            base, race_no, stadium_code, date
+        )
     }
 
     /// Fetch HTML page with rate limiting and retry
