@@ -1,0 +1,11 @@
+# Pre-commit hooks (run via `prek`). Activate once with: prek install
+# Keeps every commit rustfmt-clean by auto-formatting staged Rust files.
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt (auto-format staged Rust)
+        entry: scripts/cargo-fmt-staged.sh
+        language: script
+        files: ^rust-api/.*\.rs$
+        pass_filenames: true
