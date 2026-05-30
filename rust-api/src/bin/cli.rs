@@ -12,6 +12,7 @@ use boatrace::backtesting::{BacktestConfig, BacktestSimulator};
 use boatrace::core::kelly::KellyCalculator;
 use boatrace::data::{load_exacta_odds, load_trifecta_odds, RaceData};
 use boatrace::predictor::FallbackPredictor;
+use boatrace::validation::validate_date;
 use boatrace::{ExactaPrediction, RacerEntry, TrifectaPrediction};
 
 #[cfg(feature = "scraper")]
@@ -400,6 +401,8 @@ fn predict_race(
     threshold: f64,
     top: usize,
 ) -> Result<()> {
+    validate_date(date)?;
+
     println!(
         "{}: {} ({}) / {} / {}R",
         "Predicting".green(),
@@ -668,6 +671,8 @@ fn predict_race(
 }
 
 fn list_races(data_dir: &Path, date: u32) -> Result<()> {
+    validate_date(date)?;
+
     println!(
         "{}: {} ({})",
         "Listing races for".green(),
@@ -765,6 +770,11 @@ fn run_backtest(
     // Parse output format
     let format = OutputFormat::from_str(output_format)
         .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Validate test_start date if provided
+    if let Some(date) = test_start {
+        validate_date(date)?;
+    }
 
     // Only print status messages for table format
     let is_table = matches!(format, OutputFormat::Table);
@@ -950,6 +960,7 @@ fn run_scrape(
     }
 
     // Validate inputs
+    validate_date(date)?;
     if !(1..=24).contains(&stadium) {
         anyhow::bail!("Stadium code must be 1-24, got {}", stadium);
     }

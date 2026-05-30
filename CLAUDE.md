@@ -382,7 +382,7 @@ The simulator auto-detects model type from `metadata.json` and uses the appropri
 | ID | Improvement | Impact | Status |
 |----|-------------|--------|--------|
 | M1 | Add `--output-format json\|csv` | Enable automation | ✅ Done |
-| M2 | Add date validation | Prevent invalid date errors | |
+| M2 | Add date validation | Prevent invalid date errors | ✅ Done |
 | M3 | Per-stadium course advantage | Stadium-specific predictions | ❌ Abandoned (hurt ROI, see below) |
 | M4 | Use `tabled` crate | Better table formatting | |
 | M5 | TOML config file | Persistent settings | |

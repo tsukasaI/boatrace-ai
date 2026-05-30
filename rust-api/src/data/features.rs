@@ -771,7 +771,7 @@ mod tests {
         assert_eq!(base_names.len(), 26); // 10 base + 5 relative + 3 exhibition + 2 context + 6 interaction
 
         let all_names = get_all_feature_names();
-        assert_eq!(all_names.len(), 42); // 10 base + 16 historical + 5 relative + 3 exhibition + 2 context + 6 interaction
+        assert_eq!(all_names.len(), 49); // 10 base + 16 historical + 5 relative + 3 exhibition + 2 context + 6 interaction + 7 weather
     }
 
     #[test]

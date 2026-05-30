@@ -26,6 +26,7 @@ pub mod core;
 pub mod data;
 pub mod models;
 pub mod predictor;
+pub mod validation;
 
 // API-specific modules (only available with api feature)
 #[cfg(feature = "api")]
