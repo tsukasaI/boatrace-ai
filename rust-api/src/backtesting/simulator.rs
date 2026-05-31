@@ -7,8 +7,7 @@ use super::synthetic::SyntheticOddsGenerator;
 use crate::core::kelly::KellyCalculator;
 use crate::data::{load_exacta_odds, IndexedRaceData, RaceKey};
 use crate::models::RacerEntry;
-use crate::predictor::{FallbackPredictor, Predictor, RankerPredictor};
-use crate::{ExactaPrediction, PositionProb};
+use crate::predictor::UnifiedPredictor;
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -487,6 +486,101 @@ impl IndexedRaceInfo {
     }
 }
 
+/// Bundle of indexed feature sources for computing the full feature set of a
+/// single race outside the backtest loop.
+///
+/// Used by the `predict` and `today` commands so their predictions match the
+/// backtest's. Historical features come from `results_entries.csv` (required);
+/// exhibition times, weather, and race context are best-effort and degrade to
+/// model defaults when their source files are absent (e.g. for future races).
+pub struct RaceFeatureContext {
+    history: crate::data::RacerHistoryIndex,
+    results: Option<IndexedResultsData>,
+    weather: Option<IndexedWeatherData>,
+    race_info: Option<IndexedRaceInfo>,
+}
+
+impl RaceFeatureContext {
+    /// Load all available feature sources from a processed-data directory.
+    ///
+    /// History (from `results_entries.csv`) is required; the remaining sources
+    /// are optional and silently skipped when missing.
+    pub fn load(data_dir: &Path) -> Result<Self, PolarsError> {
+        let results_path = data_dir.join("results_entries.csv");
+        let history = crate::data::RacerHistoryIndex::load(&results_path)?;
+        let results = IndexedResultsData::load(&results_path).ok();
+
+        let weather_path = data_dir.join("results_races.csv");
+        let weather = if weather_path.exists() {
+            IndexedWeatherData::load(&weather_path).ok()
+        } else {
+            None
+        };
+
+        let race_info_path = data_dir.join("programs_races.csv");
+        let race_info = if race_info_path.exists() {
+            IndexedRaceInfo::load(&race_info_path).ok()
+        } else {
+            None
+        };
+
+        Ok(Self {
+            history,
+            results,
+            weather,
+            race_info,
+        })
+    }
+
+    /// Compute historical features for each entry, considering only races
+    /// before `date`. Returned vector is parallel to `entries`.
+    pub fn historical_features(
+        &self,
+        date: u32,
+        stadium_code: u8,
+        entries: &[RacerEntry],
+    ) -> Vec<crate::data::HistoricalFeatures> {
+        entries
+            .iter()
+            .map(|e| {
+                self.history.compute_historical_features(
+                    e.racer_id,
+                    stadium_code,
+                    e.boat_no, // course (assuming boat_no = starting course)
+                    e.boat_no,
+                    date,
+                )
+            })
+            .collect()
+    }
+
+    /// Exhibition times for the race, if recorded in results data.
+    pub fn exhibition_times(&self, date: u32, stadium_code: u8, race_no: u8) -> Option<[f64; 6]> {
+        self.results
+            .as_ref()
+            .and_then(|r| r.get_exhibition_times(date, stadium_code, race_no))
+    }
+
+    /// Weather features for the race, if recorded.
+    pub fn weather(
+        &self,
+        date: u32,
+        stadium_code: u8,
+        race_no: u8,
+    ) -> Option<crate::predictor::WeatherFeatures> {
+        self.weather
+            .as_ref()
+            .and_then(|w| w.get_weather(date, stadium_code, race_no))
+    }
+
+    /// Encoded race context (race_grade, is_final), if race info is available.
+    pub fn race_context(&self, date: u32, stadium_code: u8, race_no: u8) -> Option<(f64, f64)> {
+        self.race_info
+            .as_ref()
+            .map(|ri| ri.encode_race_context(date, stadium_code, race_no))
+    }
+}
+
 /// Backtest simulator configuration
 #[derive(Debug, Clone)]
 pub struct BacktestConfig {
@@ -524,80 +618,6 @@ impl Default for BacktestConfig {
     }
 }
 
-/// Unified predictor that can use ONNX binary, ONNX ranker, or fallback
-enum UnifiedPredictor {
-    Onnx(Predictor),
-    OnnxRanker(RankerPredictor),
-    Fallback(FallbackPredictor),
-}
-
-impl UnifiedPredictor {
-    #[allow(dead_code)]
-    fn predict_positions(&mut self, entries: &[RacerEntry]) -> Vec<PositionProb> {
-        self.predict_positions_full(entries, None, None, None, None, None, None)
-    }
-
-    #[allow(dead_code)]
-    fn predict_positions_with_history(
-        &mut self,
-        entries: &[RacerEntry],
-        historical: Option<&[crate::data::HistoricalFeatures]>,
-    ) -> Vec<PositionProb> {
-        self.predict_positions_full(entries, historical, None, None, None, None, None)
-    }
-
-    fn predict_positions_full(
-        &mut self,
-        entries: &[RacerEntry],
-        historical: Option<&[crate::data::HistoricalFeatures]>,
-        stadium_course: Option<&[crate::data::StadiumCourseFeatures]>,
-        exhibition_times: Option<[f64; 6]>,
-        race_context: Option<(f64, f64)>,
-        stadium_code: Option<u8>,
-        weather: Option<&crate::predictor::WeatherFeatures>,
-    ) -> Vec<PositionProb> {
-        match self {
-            UnifiedPredictor::Onnx(p) => p
-                .predict_positions_full(
-                    entries,
-                    historical,
-                    stadium_course,
-                    exhibition_times,
-                    race_context,
-                    stadium_code,
-                    weather,
-                )
-                .unwrap_or_else(|e| {
-                    eprintln!("ONNX prediction failed: {}, using fallback", e);
-                    FallbackPredictor::new().predict_positions(entries)
-                }),
-            UnifiedPredictor::OnnxRanker(p) => p
-                .predict_positions_full(
-                    entries,
-                    historical,
-                    stadium_course,
-                    exhibition_times,
-                    race_context,
-                    stadium_code,
-                    weather,
-                )
-                .unwrap_or_else(|e| {
-                    eprintln!("ONNX ranker prediction failed: {}, using fallback", e);
-                    FallbackPredictor::new().predict_positions(entries)
-                }),
-            UnifiedPredictor::Fallback(p) => p.predict_positions(entries),
-        }
-    }
-
-    fn calculate_exacta_probs(&self, position_probs: &[PositionProb]) -> Vec<ExactaPrediction> {
-        match self {
-            UnifiedPredictor::Onnx(p) => p.calculate_exacta_probs(position_probs),
-            UnifiedPredictor::OnnxRanker(p) => p.calculate_exacta_probs(position_probs),
-            UnifiedPredictor::Fallback(p) => p.calculate_exacta_probs(position_probs),
-        }
-    }
-}
-
 /// Backtest simulator
 pub struct BacktestSimulator {
     pub config: BacktestConfig,
@@ -621,54 +641,9 @@ impl BacktestSimulator {
             None
         };
 
-        // Try to load ONNX models if path provided
-        // Detect model type from metadata.json
-        let predictor = if let Some(ref model_dir) = config.model_dir {
-            // Check metadata.json for model_type
-            let metadata_path = model_dir.join("metadata.json");
-            let model_type = if metadata_path.exists() {
-                std::fs::read_to_string(&metadata_path)
-                    .ok()
-                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                    .and_then(|v| {
-                        v.get("model_type")
-                            .and_then(|t| t.as_str())
-                            .map(String::from)
-                    })
-                    .unwrap_or_else(|| "binary".to_string())
-            } else {
-                "binary".to_string()
-            };
-
-            if model_type == "lambdarank" {
-                // Load LambdaRank ranker model
-                match RankerPredictor::new(model_dir) {
-                    Ok(p) => {
-                        eprintln!("Using LambdaRank predictor from {:?}", model_dir);
-                        UnifiedPredictor::OnnxRanker(p)
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to load LambdaRank model: {}, using fallback", e);
-                        UnifiedPredictor::Fallback(FallbackPredictor::new())
-                    }
-                }
-            } else {
-                // Load binary classifier models
-                match Predictor::new(model_dir) {
-                    Ok(p) => {
-                        eprintln!("Using ONNX binary predictor from {:?}", model_dir);
-                        UnifiedPredictor::Onnx(p)
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to load ONNX models: {}, using fallback", e);
-                        UnifiedPredictor::Fallback(FallbackPredictor::new())
-                    }
-                }
-            }
-        } else {
-            eprintln!("No model directory specified, using fallback predictor");
-            UnifiedPredictor::Fallback(FallbackPredictor::new())
-        };
+        // Load the predictor from the configured model directory (detects model
+        // type from metadata.json; fails soft to the heuristic fallback).
+        let predictor = UnifiedPredictor::from_model_dir(config.model_dir.as_deref());
 
         // Create synthetic odds generator if enabled
         let synthetic_odds = if config.use_synthetic_odds {

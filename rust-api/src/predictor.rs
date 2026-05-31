@@ -1270,6 +1270,153 @@ impl Default for FallbackPredictor {
     }
 }
 
+/// Unified predictor that can use an ONNX binary classifier, an ONNX LambdaRank
+/// ranker, or the heuristic fallback predictor.
+///
+/// The concrete variant is selected from `metadata.json`'s `model_type`. Loading
+/// is fail-soft: if no model directory is given or the model fails to load, the
+/// heuristic [`FallbackPredictor`] is used and a warning is printed to stderr.
+pub enum UnifiedPredictor {
+    Onnx(Predictor),
+    OnnxRanker(RankerPredictor),
+    Fallback(FallbackPredictor),
+}
+
+impl UnifiedPredictor {
+    /// Load a predictor from an optional model directory.
+    ///
+    /// Detects the model type from `metadata.json`. On any failure (missing
+    /// directory, unreadable model, parse error) this logs a warning to stderr
+    /// and returns the heuristic fallback so prediction never hard-fails.
+    pub fn from_model_dir(model_dir: Option<&Path>) -> Self {
+        let Some(model_dir) = model_dir else {
+            eprintln!("No model directory specified, using fallback predictor");
+            return UnifiedPredictor::Fallback(FallbackPredictor::new());
+        };
+
+        // Detect model type from metadata.json (defaults to binary).
+        let metadata_path = model_dir.join("metadata.json");
+        let model_type = if metadata_path.exists() {
+            std::fs::read_to_string(&metadata_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| {
+                    v.get("model_type")
+                        .and_then(|t| t.as_str())
+                        .map(String::from)
+                })
+                .unwrap_or_else(|| "binary".to_string())
+        } else {
+            "binary".to_string()
+        };
+
+        if model_type == "lambdarank" {
+            match RankerPredictor::new(model_dir) {
+                Ok(p) => {
+                    eprintln!("Using LambdaRank predictor from {:?}", model_dir);
+                    UnifiedPredictor::OnnxRanker(p)
+                }
+                Err(e) => {
+                    eprintln!("Failed to load LambdaRank model: {}, using fallback", e);
+                    UnifiedPredictor::Fallback(FallbackPredictor::new())
+                }
+            }
+        } else {
+            match Predictor::new(model_dir) {
+                Ok(p) => {
+                    eprintln!("Using ONNX binary predictor from {:?}", model_dir);
+                    UnifiedPredictor::Onnx(p)
+                }
+                Err(e) => {
+                    eprintln!("Failed to load ONNX models: {}, using fallback", e);
+                    UnifiedPredictor::Fallback(FallbackPredictor::new())
+                }
+            }
+        }
+    }
+
+    /// Predict position probabilities with no auxiliary features.
+    pub fn predict_positions(&mut self, entries: &[RacerEntry]) -> Vec<PositionProb> {
+        self.predict_positions_full(entries, None, None, None, None, None, None)
+    }
+
+    /// Predict position probabilities with real historical features only.
+    #[allow(dead_code)]
+    pub fn predict_positions_with_history(
+        &mut self,
+        entries: &[RacerEntry],
+        historical: Option<&[crate::data::HistoricalFeatures]>,
+    ) -> Vec<PositionProb> {
+        self.predict_positions_full(entries, historical, None, None, None, None, None)
+    }
+
+    /// Predict position probabilities with the full feature set.
+    #[allow(clippy::too_many_arguments)]
+    pub fn predict_positions_full(
+        &mut self,
+        entries: &[RacerEntry],
+        historical: Option<&[crate::data::HistoricalFeatures]>,
+        stadium_course: Option<&[crate::data::StadiumCourseFeatures]>,
+        exhibition_times: Option<[f64; 6]>,
+        race_context: Option<(f64, f64)>,
+        stadium_code: Option<u8>,
+        weather: Option<&WeatherFeatures>,
+    ) -> Vec<PositionProb> {
+        match self {
+            UnifiedPredictor::Onnx(p) => p
+                .predict_positions_full(
+                    entries,
+                    historical,
+                    stadium_course,
+                    exhibition_times,
+                    race_context,
+                    stadium_code,
+                    weather,
+                )
+                .unwrap_or_else(|e| {
+                    eprintln!("ONNX prediction failed: {}, using fallback", e);
+                    FallbackPredictor::new().predict_positions(entries)
+                }),
+            UnifiedPredictor::OnnxRanker(p) => p
+                .predict_positions_full(
+                    entries,
+                    historical,
+                    stadium_course,
+                    exhibition_times,
+                    race_context,
+                    stadium_code,
+                    weather,
+                )
+                .unwrap_or_else(|e| {
+                    eprintln!("ONNX ranker prediction failed: {}, using fallback", e);
+                    FallbackPredictor::new().predict_positions(entries)
+                }),
+            UnifiedPredictor::Fallback(p) => p.predict_positions(entries),
+        }
+    }
+
+    /// Calculate exacta (2連単) probabilities from position probabilities.
+    pub fn calculate_exacta_probs(&self, position_probs: &[PositionProb]) -> Vec<ExactaPrediction> {
+        match self {
+            UnifiedPredictor::Onnx(p) => p.calculate_exacta_probs(position_probs),
+            UnifiedPredictor::OnnxRanker(p) => p.calculate_exacta_probs(position_probs),
+            UnifiedPredictor::Fallback(p) => p.calculate_exacta_probs(position_probs),
+        }
+    }
+
+    /// Calculate trifecta (3連単) probabilities from position probabilities.
+    pub fn calculate_trifecta_probs(
+        &self,
+        position_probs: &[PositionProb],
+    ) -> Vec<TrifectaPrediction> {
+        match self {
+            UnifiedPredictor::Onnx(p) => p.calculate_trifecta_probs(position_probs),
+            UnifiedPredictor::OnnxRanker(p) => p.calculate_trifecta_probs(position_probs),
+            UnifiedPredictor::Fallback(p) => p.calculate_trifecta_probs(position_probs),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
