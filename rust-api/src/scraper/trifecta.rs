@@ -35,40 +35,38 @@ pub fn parse_trifecta_odds(html: &str) -> Result<HashMap<(u8, u8, u8), f64>, Scr
         ));
     }
 
-    // Find the table
+    // Find the odds table. The page has several `div.table1` tables (a race
+    // navigation table plus the odds grid); the odds grid is the one whose
+    // header lists the six first-place boats (is-boatColorN), so we select by
+    // that rather than taking the first table.
     let table_selector =
         Selector::parse("div.table1 table").map_err(|e| ScraperError::ParseError(e.to_string()))?;
-
-    let table = document
-        .select(&table_selector)
-        .next()
-        .ok_or_else(|| ScraperError::ParseError("Could not find odds table".to_string()))?;
-
-    // Get 1st place boats from header
     let thead_selector =
         Selector::parse("thead").map_err(|e| ScraperError::ParseError(e.to_string()))?;
     let th_selector = Selector::parse("th").map_err(|e| ScraperError::ParseError(e.to_string()))?;
 
-    let thead = table
-        .select(&thead_selector)
-        .next()
-        .ok_or_else(|| ScraperError::ParseError("Could not find table header".to_string()))?;
-
-    let mut first_boats: Vec<u8> = Vec::new();
-    for th in thead.select(&th_selector) {
-        if let Some(boat) = get_boat_number_from_element(&th) {
-            if !first_boats.contains(&boat) {
-                first_boats.push(boat);
+    let header_boats = |table: &scraper::ElementRef| -> Vec<u8> {
+        let mut boats: Vec<u8> = Vec::new();
+        if let Some(thead) = table.select(&thead_selector).next() {
+            for th in thead.select(&th_selector) {
+                if let Some(boat) = get_boat_number_from_element(&th) {
+                    if !boats.contains(&boat) {
+                        boats.push(boat);
+                    }
+                }
             }
         }
-    }
+        boats
+    };
 
-    if first_boats.len() != 6 {
-        return Err(ScraperError::ParseError(format!(
-            "Expected 6 first boats, got {}",
-            first_boats.len()
-        )));
-    }
+    let (table, first_boats) = document
+        .select(&table_selector)
+        .map(|t| {
+            let boats = header_boats(&t);
+            (t, boats)
+        })
+        .find(|(_, boats)| boats.len() == 6)
+        .ok_or_else(|| ScraperError::ParseError("Could not find odds table".to_string()))?;
 
     // Parse body rows
     let tbody_selector =

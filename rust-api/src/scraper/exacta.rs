@@ -33,37 +33,38 @@ pub fn parse_exacta_odds(html: &str) -> Result<HashMap<(u8, u8), f64>, ScraperEr
         ));
     }
 
-    // Find the table - look for table1 class containing the odds table
+    // Find the odds table. The page has several `div.table1` tables (a race
+    // navigation table, the 2連単 grid, the 2連複 grid); the odds grid is the
+    // one whose header lists the six first-place boats (is-boatColorN), so we
+    // select by that rather than taking the first table.
     let table_selector =
         Selector::parse("div.table1 table").map_err(|e| ScraperError::ParseError(e.to_string()))?;
-
-    let table = document
-        .select(&table_selector)
-        .next()
-        .ok_or_else(|| ScraperError::ParseError("Could not find odds table".to_string()))?;
-
-    // Get 1st place boats from header
     let thead_selector =
         Selector::parse("thead").map_err(|e| ScraperError::ParseError(e.to_string()))?;
     let th_selector = Selector::parse("th").map_err(|e| ScraperError::ParseError(e.to_string()))?;
 
-    let thead = table
-        .select(&thead_selector)
-        .next()
-        .ok_or_else(|| ScraperError::ParseError("Could not find table header".to_string()))?;
-
-    let mut first_boats: Vec<u8> = Vec::new();
-    for th in thead.select(&th_selector) {
-        if let Some(boat) = get_boat_number_from_element(&th) {
-            if !first_boats.contains(&boat) {
-                first_boats.push(boat);
+    let header_boats = |table: &scraper::ElementRef| -> Vec<u8> {
+        let mut boats: Vec<u8> = Vec::new();
+        if let Some(thead) = table.select(&thead_selector).next() {
+            for th in thead.select(&th_selector) {
+                if let Some(boat) = get_boat_number_from_element(&th) {
+                    if !boats.contains(&boat) {
+                        boats.push(boat);
+                    }
+                }
             }
         }
-    }
+        boats
+    };
 
-    if first_boats.len() != 6 {
-        tracing::warn!("Expected 6 first boats, got {}", first_boats.len());
-    }
+    let (table, first_boats) = document
+        .select(&table_selector)
+        .map(|t| {
+            let boats = header_boats(&t);
+            (t, boats)
+        })
+        .find(|(_, boats)| boats.len() == 6)
+        .ok_or_else(|| ScraperError::ParseError("Could not find odds table".to_string()))?;
 
     // Parse body rows
     let tbody_selector =
@@ -220,5 +221,44 @@ mod tests {
         let html = r#"<html><body><p>No odds here</p></body></html>"#;
         let result = parse_exacta_odds(html);
         assert!(result.is_err());
+    }
+
+    /// Regression: the odds page leads with a race-navigation `div.table1`
+    /// (no boat-colored header) before the odds grid. The parser must skip the
+    /// nav table and read the grid whose header lists the six first-place boats.
+    #[test]
+    fn test_parse_exacta_odds_skips_nav_table() {
+        let html = r#"
+            <span class="title7_mainLabel">2連単オッズ</span>
+            <div class="table1"><table>
+                <thead><tr>
+                    <th class="is-thColor3">1R</th><th class="is-thColor3">2R</th>
+                </tr></thead>
+                <tbody><tr><td colspan="2">締切予定時刻</td><td>15:24</td></tr></tbody>
+            </table></div>
+            <div class="table1"><table>
+                <thead><tr>
+                    <th class="is-boatColor1">1</th><th class="is-boatColor1">A</th>
+                    <th class="is-boatColor2">2</th><th class="is-boatColor2">B</th>
+                    <th class="is-boatColor3">3</th><th class="is-boatColor3">C</th>
+                    <th class="is-boatColor4">4</th><th class="is-boatColor4">D</th>
+                    <th class="is-boatColor5">5</th><th class="is-boatColor5">E</th>
+                    <th class="is-boatColor6">6</th><th class="is-boatColor6">F</th>
+                </tr></thead>
+                <tbody><tr>
+                    <td class="is-boatColor2">2</td><td class="oddsPoint ">18.1</td>
+                    <td class="is-boatColor1">1</td><td class="oddsPoint ">19.6</td>
+                    <td class="is-boatColor1">1</td><td class="oddsPoint ">14.7</td>
+                    <td class="is-boatColor1">1</td><td class="oddsPoint ">23.6</td>
+                    <td class="is-boatColor1">1</td><td class="oddsPoint ">23.6</td>
+                    <td class="is-boatColor1">1</td><td class="oddsPoint ">29.5</td>
+                </tr></tbody>
+            </table></div>
+        "#;
+        let odds = parse_exacta_odds(html).expect("should parse odds grid");
+        assert_eq!(odds.get(&(1, 2)), Some(&18.1));
+        assert_eq!(odds.get(&(2, 1)), Some(&19.6));
+        assert_eq!(odds.get(&(3, 1)), Some(&14.7));
+        assert_eq!(odds.get(&(6, 1)), Some(&29.5));
     }
 }
