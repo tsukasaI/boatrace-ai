@@ -1327,7 +1327,13 @@ fn run_today(
                             std::fs::write(&filepath, json)?;
                             Ok::<_, anyhow::Error>(())
                         }
-                        Err(_) => Ok(()),
+                        Err(e) => {
+                            eprintln!(
+                                "  Failed to scrape exacta odds for {}-{}R: {}",
+                                stadium.code, race_no, e
+                            );
+                            Ok(())
+                        }
                     }
                 });
 
@@ -1342,7 +1348,13 @@ fn run_today(
                                 std::fs::write(&filepath, json)?;
                                 Ok::<_, anyhow::Error>(())
                             }
-                            Err(_) => Ok(()),
+                            Err(e) => {
+                                eprintln!(
+                                    "  Failed to scrape trifecta odds for {}-{}R: {}",
+                                    stadium.code, race_no, e
+                                );
+                                Ok(())
+                            }
                         }
                     });
                 }

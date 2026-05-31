@@ -46,7 +46,7 @@ pub fn parse_race_entries(
 
     // Extract race name and start time from header
     let race_name = extract_race_name(&document);
-    let start_time = extract_start_time(&document);
+    let start_time = extract_start_time(&document, race_no);
 
     // Each boat is in a separate tbody with class is-fs12
     // Look for tbody elements and find boat numbers via is-boatColor classes
@@ -88,7 +88,7 @@ pub fn parse_race_entries(
         let racer_name = racer_name_selector
             .as_ref()
             .and_then(|sel| tbody.select(sel).nth(1)) // Second link usually has the name
-            .map(|el| el.text().collect::<String>().trim().replace("　", " "))
+            .map(|el| el.text().collect::<String>().trim().replace(" ", " "))
             .unwrap_or_default();
 
         if racer_name.is_empty() {
@@ -292,19 +292,29 @@ fn extract_race_name(document: &Html) -> Option<String> {
 }
 
 /// Extract start time from document
-fn extract_start_time(document: &Html) -> Option<String> {
-    let selector = Selector::parse("span.heading2_titleDetail, div.heading2_titleDetail").ok()?;
+/// Extract the scheduled deadline (start) time for `race_no` from the racelist
+/// page.
+///
+/// The page has a single deadline-time row: a `<td>締切予定時刻</td>` header
+/// followed by one `<td>` per race (R1..R12) holding `HH:MM`. We locate that row
+/// and return the cell for the requested race (1-indexed).
+fn extract_start_time(document: &Html, race_no: u8) -> Option<String> {
+    let td_sel = Selector::parse("td").ok()?;
 
-    for el in document.select(&selector) {
-        let text: String = el.text().collect::<String>().trim().to_string();
-        // Look for time pattern (e.g., "14:30" or "締切予定 14:30")
-        if text.contains(':') {
-            let parts: Vec<&str> = text.split_whitespace().collect();
-            for part in parts {
-                if part.contains(':') && part.len() <= 5 {
-                    return Some(part.to_string());
-                }
-            }
+    for td in document.select(&td_sel) {
+        if td.text().collect::<String>().trim() == "締切予定時刻" {
+            // Collect the sibling time cells in order. The "締切予定時刻" header
+            // itself has no ':' and is filtered out, so index 0 == R1.
+            let times: Vec<String> = td
+                .parent()
+                .into_iter()
+                .flat_map(|tr| tr.children())
+                .filter_map(scraper::ElementRef::wrap)
+                .filter(|e| e.value().name() == "td")
+                .map(|e| e.text().collect::<String>().trim().to_string())
+                .filter(|t| t.contains(':') && t.len() <= 5)
+                .collect();
+            return times.get((race_no as usize).saturating_sub(1)).cloned();
         }
     }
 
@@ -356,5 +366,43 @@ mod tests {
         let html = "<html><body></body></html>";
         let result = parse_race_entries(html, 20251231, 23, 1);
         assert!(result.is_err());
+    }
+
+    /// Reproduces the racelist deadline-time row: a "締切予定時刻" header cell
+    /// followed by one cell per race (R1..R12).
+    const DEADLINE_ROW_HTML: &str = r#"
+        <table><tbody><tr>
+            <td colspan="2">締切予定時刻</td>
+            <td class=" is-activeColor1">15:24</td>
+            <td>15:57</td>
+            <td>16:37</td>
+            <td>17:15</td>
+            <td>17:40</td>
+            <td>18:05</td>
+            <td>18:30</td>
+            <td>18:56</td>
+            <td>19:22</td>
+            <td>19:48</td>
+            <td>20:14</td>
+            <td>20:42</td>
+        </tr></tbody></table>
+    "#;
+
+    #[test]
+    fn test_extract_start_time_by_race() {
+        let doc = Html::parse_document(DEADLINE_ROW_HTML);
+        assert_eq!(extract_start_time(&doc, 1).as_deref(), Some("15:24"));
+        assert_eq!(extract_start_time(&doc, 2).as_deref(), Some("15:57"));
+        assert_eq!(extract_start_time(&doc, 12).as_deref(), Some("20:42"));
+    }
+
+    #[test]
+    fn test_extract_start_time_out_of_range_and_missing() {
+        let doc = Html::parse_document(DEADLINE_ROW_HTML);
+        // Race beyond the 12 listed cells yields None rather than a wrong time.
+        assert_eq!(extract_start_time(&doc, 13), None);
+        // A page without the deadline row yields None.
+        let empty = Html::parse_document("<html><body></body></html>");
+        assert_eq!(extract_start_time(&empty, 1), None);
     }
 }

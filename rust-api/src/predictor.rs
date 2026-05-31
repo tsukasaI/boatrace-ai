@@ -4,7 +4,7 @@ use ort::{
     value::Tensor,
 };
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::info;
 
 /// Number of position models (one per finishing position 1-6)
@@ -1294,6 +1294,14 @@ impl UnifiedPredictor {
             return UnifiedPredictor::Fallback(FallbackPredictor::new());
         };
 
+        // Resolve the directory so the default works regardless of CWD (e.g. run
+        // from the rust-api subdirectory, where models live one level up).
+        let resolved = Self::resolve_model_dir(model_dir);
+        if resolved != model_dir {
+            eprintln!("Resolved model directory {:?} -> {:?}", model_dir, resolved);
+        }
+        let model_dir = resolved.as_path();
+
         // Detect model type from metadata.json (defaults to binary).
         let metadata_path = model_dir.join("metadata.json");
         let model_type = if metadata_path.exists() {
@@ -1333,6 +1341,43 @@ impl UnifiedPredictor {
                 }
             }
         }
+    }
+
+    /// Resolve a model directory that may be given relative to a different CWD.
+    ///
+    /// If `dir` already contains model files it is used as-is (so an explicit,
+    /// valid path is never second-guessed). Otherwise a few fallback candidates
+    /// are tried — the same path resolved from the parent directory, then from
+    /// each ancestor of the executable — so the default `models/onnx` works
+    /// whether the CLI runs from the project root or the `rust-api`
+    /// subdirectory. Returns `dir` unchanged when nothing matches, so the
+    /// caller's load failure still surfaces the originally requested path.
+    fn resolve_model_dir(dir: &Path) -> PathBuf {
+        let looks_like_model = |d: &Path| {
+            d.join("metadata.json").exists()
+                || d.join("ranker.onnx").exists()
+                || d.join("position_1.onnx").exists()
+        };
+
+        if looks_like_model(dir) {
+            return dir.to_path_buf();
+        }
+
+        let parent_relative = Path::new("..").join(dir);
+        if looks_like_model(&parent_relative) {
+            return parent_relative;
+        }
+
+        if let Ok(exe) = std::env::current_exe() {
+            for ancestor in exe.ancestors().skip(1) {
+                let candidate = ancestor.join(dir);
+                if looks_like_model(&candidate) {
+                    return candidate;
+                }
+            }
+        }
+
+        dir.to_path_buf()
     }
 
     /// Predict position probabilities with no auxiliary features.
