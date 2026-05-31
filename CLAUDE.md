@@ -87,17 +87,32 @@ cargo build --release --features full
 cd rust-api
 
 # Today's predictions (auto-scrape odds + predict)
-./target/release/boatrace-cli today
+# NOTE: --model-dir is required from the rust-api dir, else it falls back to the
+# heuristic predictor (default is models/onnx relative to CWD = rust-api/models/onnx).
+./target/release/boatrace-cli --model-dir ../models/onnx today
 
 # Specific stadium
-./target/release/boatrace-cli today -s 23,12
+./target/release/boatrace-cli --model-dir ../models/onnx today -s 23,12
 
 # With trifecta
-./target/release/boatrace-cli today --trifecta
+./target/release/boatrace-cli --model-dir ../models/onnx today --trifecta
 
 # High EV only
-./target/release/boatrace-cli today --threshold 1.1
+./target/release/boatrace-cli --model-dir ../models/onnx today --threshold 1.1
 ```
+
+**`predict` and `today` use the trained LambdaRank ONNX model** (the same predictor
+as `backtest`), loaded from `--model-dir` (global flag, default `models/onnx`). If the
+model can't be loaded, both commands print a warning to stderr and fall back to the
+heuristic `FallbackPredictor` (uniform-ish, course-bias-only output). Watch for
+`Using LambdaRank predictor ...` vs `Failed to load ... using fallback` on stderr.
+
+- `predict` (a past date) builds the **full 50-feature set** (historical, exhibition,
+  weather, race context) from processed CSVs, so its probabilities match `backtest`.
+- `today` (a future date) has no results/weather yet, so it uses racer **history +
+  base features only**; exhibition/weather/context fall back to model defaults, and
+  history is bounded by the latest processed results (currently Dec 2025, so it may be
+  stale). Live ROI will therefore differ from the synthetic-odds backtest figures below.
 
 ## Rust CLI Commands
 
@@ -128,10 +143,13 @@ boat today --no-scrape
 
 ### Predict Specific Race
 ```bash
-boat predict -d 20240115 -s 23 -r 1
+# --model-dir and --data-dir are global flags (before the subcommand). From the
+# rust-api dir they must point up one level, like backtest.
+boat --model-dir ../models/onnx --data-dir ../data/processed predict -d 20240115 -s 23 -r 1
 
 # With betting recommendations
-boat predict -d 20240115 -s 23 -r 1 --bankroll 50000 --kelly 0.25
+boat --model-dir ../models/onnx --data-dir ../data/processed \
+  predict -d 20240115 -s 23 -r 1 --bankroll 50000 --kelly 0.25
 ```
 
 ### List Races
@@ -404,6 +422,18 @@ The simulator auto-detects model type from `metadata.json` and uses the appropri
 | H2 | Export Platt scaling to ONNX metadata | export_onnx.py | Calibrated predictions in Rust | ✅ Done |
 | H3 | LambdaRank ranking model | train.py, predictor.rs | Single model with Plackett-Luce probabilities | ✅ Done |
 | H4 | Add weather features | features.py, parser.py | Weather significantly affects outcomes | ✅ Done |
+| H5 | Wire `predict`/`today` to the ONNX model | predictor.rs, cli.rs | Daily commands used the heuristic `FallbackPredictor`, not the trained LambdaRank model — only `backtest` used ONNX | ✅ Done |
+
+### H5 Notes
+
+`predict` and `today` previously instantiated `FallbackPredictor::new()` directly,
+so the trained model never ran in daily operation (its ROI figures came only from
+`backtest`). Both now use the shared `UnifiedPredictor` loaded from `--model-dir`
+(default `models/onnx`), with fail-soft fallback + stderr warning. `predict` builds
+the full feature set via `RaceFeatureContext` (matches `backtest` to 5 decimals,
+verified on 20241229/24/1); `today` uses racer history + base features only
+(no results/weather for a future race). The refactor was verified non-regressive:
+`backtest` detailed output is byte-identical before/after (modulo HashMap row order).
 
 ### Medium Priority (Quality of Life)
 

@@ -8,10 +8,10 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use boatrace::backtesting::{BacktestConfig, BacktestSimulator};
+use boatrace::backtesting::{BacktestConfig, BacktestSimulator, RaceFeatureContext};
 use boatrace::core::kelly::KellyCalculator;
 use boatrace::data::{load_exacta_odds, load_trifecta_odds, RaceData};
-use boatrace::predictor::FallbackPredictor;
+use boatrace::predictor::UnifiedPredictor;
 use boatrace::validation::validate_date;
 use boatrace::{ExactaPrediction, RacerEntry, TrifectaPrediction};
 
@@ -23,6 +23,7 @@ use boatrace::data::{flatten_payouts, PayoutParser, PayoutRecord, ProgramParser,
 /// Default data directory (relative to project root)
 const DEFAULT_DATA_DIR: &str = "data/processed";
 const DEFAULT_ODDS_DIR: &str = "data/odds";
+const DEFAULT_MODEL_DIR: &str = "models/onnx";
 
 #[derive(Parser)]
 #[command(name = "boatrace")]
@@ -42,6 +43,10 @@ struct Cli {
     /// Path to odds directory
     #[arg(long, default_value = DEFAULT_ODDS_DIR)]
     odds_dir: PathBuf,
+
+    /// Path to ONNX model directory (used by predict/today; backtest has its own --model-dir)
+    #[arg(long, default_value = DEFAULT_MODEL_DIR)]
+    model_dir: PathBuf,
 }
 
 #[derive(Subcommand)]
@@ -238,7 +243,7 @@ fn main() -> Result<()> {
     println!();
 
     if cli.interactive {
-        run_interactive(&cli.data_dir, &cli.odds_dir)?;
+        run_interactive(&cli.data_dir, &cli.odds_dir, &cli.model_dir)?;
     } else if let Some(command) = cli.command {
         match command {
             Commands::Predict {
@@ -254,6 +259,7 @@ fn main() -> Result<()> {
                 predict_race(
                     &cli.data_dir,
                     &cli.odds_dir,
+                    &cli.model_dir,
                     date,
                     stadium,
                     race,
@@ -337,6 +343,7 @@ fn main() -> Result<()> {
                 run_today(
                     &cli.data_dir,
                     &cli.odds_dir,
+                    &cli.model_dir,
                     stadiums,
                     races,
                     trifecta,
@@ -400,6 +407,7 @@ fn stadium_name(code: u8) -> &'static str {
 fn predict_race(
     data_dir: &Path,
     odds_dir: &Path,
+    model_dir: &Path,
     date: u32,
     stadium: u8,
     race: u8,
@@ -461,9 +469,35 @@ fn predict_race(
     }
     println!();
 
-    // Run prediction
-    let predictor = FallbackPredictor::new();
-    let position_probs = predictor.predict_positions(&racer_entries);
+    // Run prediction (loads ONNX model from model_dir; fails soft to heuristic)
+    let mut predictor = UnifiedPredictor::from_model_dir(Some(model_dir));
+
+    // Build the full feature set from processed data so predictions match the
+    // backtest. Missing sources (e.g. for a future race) degrade to model defaults.
+    let position_probs = match RaceFeatureContext::load(data_dir) {
+        Ok(ctx) => {
+            let historical = ctx.historical_features(date, stadium, &racer_entries);
+            let exhibition = ctx.exhibition_times(date, stadium, race);
+            let race_context = ctx.race_context(date, stadium, race);
+            let weather = ctx.weather(date, stadium, race);
+            predictor.predict_positions_full(
+                &racer_entries,
+                Some(&historical),
+                None, // stadium_course disabled for 50-feature model
+                exhibition,
+                race_context,
+                Some(stadium),
+                weather.as_ref(),
+            )
+        }
+        Err(e) => {
+            eprintln!(
+                "Could not load feature context ({}); predicting without historical features",
+                e
+            );
+            predictor.predict_positions(&racer_entries)
+        }
+    };
 
     // Display position probabilities
     println!("{}", "着順予想 (Position Probabilities):".yellow().bold());
@@ -1105,8 +1139,9 @@ fn run_scrape(
 #[cfg(feature = "scraper")]
 #[allow(clippy::too_many_arguments)]
 fn run_today(
-    _data_dir: &Path,
+    data_dir: &Path,
     odds_dir: &Path,
+    model_dir: &Path,
     stadiums: Option<Vec<u8>>,
     races: Option<Vec<u8>>,
     trifecta: bool,
@@ -1217,8 +1252,23 @@ fn run_today(
     let mut total_stake: i64 = 0;
     let mut total_expected: f64 = 0.0;
 
-    let predictor = FallbackPredictor::new();
+    let mut predictor = UnifiedPredictor::from_model_dir(Some(model_dir));
     let kelly = KellyCalculator::new(bankroll, kelly_mult, 100, 0.10, 0.30);
+
+    // Historical features come from past results. Exhibition times, weather, and
+    // race context are not available for a future race, so today's predictions
+    // use racer history plus base features only. History is also bounded by the
+    // latest processed results, so it may be stale relative to the race date.
+    let feature_ctx = match RaceFeatureContext::load(data_dir) {
+        Ok(ctx) => Some(ctx),
+        Err(e) => {
+            eprintln!(
+                "Racer history unavailable ({}); predictions will use base features only",
+                e
+            );
+            None
+        }
+    };
 
     // Process each stadium
     for stadium in &active_stadiums {
@@ -1301,8 +1351,20 @@ fn run_today(
             // Load odds
             let exacta_odds = load_exacta_odds(odds_dir, date, stadium.code, *race_no);
 
-            // Run prediction
-            let position_probs = predictor.predict_positions(&race_info.entries);
+            // Run prediction with racer history (exhibition/weather/context are
+            // unavailable for future races and fall back to model defaults).
+            let historical = feature_ctx
+                .as_ref()
+                .map(|ctx| ctx.historical_features(date, stadium.code, &race_info.entries));
+            let position_probs = predictor.predict_positions_full(
+                &race_info.entries,
+                historical.as_deref(),
+                None,
+                None,
+                None,
+                Some(stadium.code),
+                None,
+            );
             let exacta_probs = predictor.calculate_exacta_probs(&position_probs);
 
             // Calculate predictions with EV
@@ -1701,7 +1763,7 @@ fn write_json_as_csv(data: &[serde_json::Value], path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_interactive(data_dir: &Path, odds_dir: &Path) -> Result<()> {
+fn run_interactive(data_dir: &Path, odds_dir: &Path, model_dir: &Path) -> Result<()> {
     println!("{}", "Interactive mode".green().bold());
     println!("Type 'quit' to exit.\n");
 
@@ -1740,7 +1802,8 @@ fn run_interactive(data_dir: &Path, odds_dir: &Path) -> Result<()> {
 
                 println!();
                 predict_race(
-                    data_dir, odds_dir, date, stadium, race, trifecta, 100_000, 0.25, 1.0, 10,
+                    data_dir, odds_dir, model_dir, date, stadium, race, trifecta, 100_000, 0.25,
+                    1.0, 10,
                 )?;
                 println!();
             }
