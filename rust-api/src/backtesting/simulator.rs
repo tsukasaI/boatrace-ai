@@ -5,7 +5,7 @@
 use super::metrics::{calculate_metrics, BacktestMetrics};
 use super::synthetic::SyntheticOddsGenerator;
 use crate::core::kelly::KellyCalculator;
-use crate::data::{load_exacta_odds, IndexedRaceData, RaceKey};
+use crate::data::{load_exacta_odds, IndexedRaceData, PreDeadlineOdds, RaceKey, SnapshotIndex};
 use crate::models::RacerEntry;
 use crate::predictor::UnifiedPredictor;
 use polars::prelude::*;
@@ -40,6 +40,13 @@ pub struct BacktestResult {
     pub total_stake: i64,
     pub total_payout: i64,
     pub metrics: Option<BacktestMetrics>,
+    /// Lookahead-free mode only: races skipped because no snapshot was captured
+    /// strictly before the deadline (and no synthetic fallback was enabled).
+    pub races_excluded_no_predeadline_odds: usize,
+    /// Lookahead-free mode only: races with no pre-deadline snapshot that fell
+    /// back to synthetic odds. Kept distinct from real-odds bets so synthetic
+    /// ROI is never silently reported as real pre-deadline ROI.
+    pub races_fell_back_to_synthetic: usize,
 }
 
 impl BacktestResult {
@@ -51,6 +58,8 @@ impl BacktestResult {
             total_stake: 0,
             total_payout: 0,
             metrics: None,
+            races_excluded_no_predeadline_odds: 0,
+            races_fell_back_to_synthetic: 0,
         }
     }
 
@@ -599,6 +608,12 @@ pub struct BacktestConfig {
     /// Maximum odds to bet on (filters out longshots where model is unreliable)
     /// Default: None (no limit for synthetic odds), 30.0 recommended for real odds
     pub max_odds: Option<f64>,
+    /// Decide bets from the latest odds snapshot captured strictly before each
+    /// race's deadline (fail-closed), instead of the post-close settled odds.
+    pub lookahead_free: bool,
+    /// Directory of accumulated `OddsSnapshot` files for lookahead-free mode.
+    /// Falls back to `odds_dir` when None.
+    pub snapshot_dir: Option<PathBuf>,
 }
 
 impl Default for BacktestConfig {
@@ -614,6 +629,8 @@ impl Default for BacktestConfig {
             use_synthetic_odds: false,
             bet_by_probability: false,
             max_odds: None,
+            lookahead_free: false,
+            snapshot_dir: None,
         }
     }
 }
@@ -736,6 +753,24 @@ impl BacktestSimulator {
         // let stadium_course_stats = IndexedStadiumCourseStats::load(&results_path, self.config.test_start_date)?;
         // eprintln!("Loaded {} stadium-course combinations", stadium_course_stats.len());
 
+        // Lookahead-free mode: index all snapshots once (avoids re-reading the
+        // directory per race). Built empty when disabled, so it costs nothing.
+        let snapshot_index = if self.config.lookahead_free {
+            let dir = self
+                .config
+                .snapshot_dir
+                .clone()
+                .or_else(|| odds_dir.map(Path::to_path_buf))
+                .unwrap_or_else(|| PathBuf::from("data/odds"));
+            eprintln!(
+                "Lookahead-free mode: indexing pre-deadline snapshots in {}...",
+                dir.display()
+            );
+            SnapshotIndex::load(&dir)
+        } else {
+            SnapshotIndex::load(PathBuf::new())
+        };
+
         let mut result = BacktestResult::new();
 
         // Iterate directly over all races (already indexed)
@@ -760,18 +795,40 @@ impl BacktestSimulator {
                     None => continue,
                 };
 
-            // Load odds if available, or use synthetic odds
-            let real_odds: Option<HashMap<(u8, u8), f64>> =
-                odds_dir.and_then(|dir| load_exacta_odds(dir, *date, *stadium_code, *race_no));
+            // Load odds. Lookahead-free mode selects the latest snapshot captured
+            // strictly before the deadline; the default path uses the post-close
+            // settled file (the documented, biased baseline).
+            let mut used_synthetic = false;
+            let odds = if self.config.lookahead_free {
+                match snapshot_index.select_exacta(*date, *stadium_code, *race_no) {
+                    PreDeadlineOdds::Selected { odds, .. } => odds,
+                    // Fail-closed: never fall through to post-close odds. Use
+                    // synthetic if enabled, else exclude this race from betting.
+                    PreDeadlineOdds::OnlyPostClose | PreDeadlineOdds::NoSnapshots => {
+                        if let Some(ref synth) = self.synthetic_odds {
+                            result.races_fell_back_to_synthetic += 1;
+                            used_synthetic = true;
+                            synth.get_all_odds()
+                        } else {
+                            result.races_excluded_no_predeadline_odds += 1;
+                            continue;
+                        }
+                    }
+                }
+            } else {
+                // Load odds if available, or use synthetic odds
+                let real_odds: Option<HashMap<(u8, u8), f64>> =
+                    odds_dir.and_then(|dir| load_exacta_odds(dir, *date, *stadium_code, *race_no));
 
-            let odds = match real_odds {
-                Some(o) => o,
-                None => {
-                    // Use synthetic odds if enabled, otherwise skip
-                    if let Some(ref synth) = self.synthetic_odds {
-                        synth.get_all_odds()
-                    } else {
-                        continue;
+                match real_odds {
+                    Some(o) => o,
+                    None => {
+                        // Use synthetic odds if enabled, otherwise skip
+                        if let Some(ref synth) = self.synthetic_odds {
+                            synth.get_all_odds()
+                        } else {
+                            continue;
+                        }
                     }
                 }
             };
@@ -794,13 +851,24 @@ impl BacktestSimulator {
             let exhibition_times =
                 results_data.get_exhibition_times(*date, *stadium_code, *race_no);
 
-            // Get race context (race_grade, is_final) from race info
-            // Only use real race context when using real odds (not synthetic)
-            // Synthetic odds don't reflect race context, causing EV mismatch
-            let race_context = if self.synthetic_odds.is_none() {
+            // Get race context (race_grade, is_final) from race info.
+            // Only use real race context with real odds; synthetic odds don't
+            // reflect race context, causing EV mismatch. In lookahead-free mode
+            // the choice is per-race (a race may use real odds while another
+            // fell back to synthetic), so it keys off `used_synthetic`.
+            let real_context = || {
                 race_info
                     .as_ref()
                     .map(|info| info.encode_race_context(*date, *stadium_code, *race_no))
+            };
+            let race_context = if self.config.lookahead_free {
+                if used_synthetic {
+                    None
+                } else {
+                    real_context()
+                }
+            } else if self.synthetic_odds.is_none() {
+                real_context()
             } else {
                 None // Use defaults (1.0, 0.0) for synthetic odds
             };
@@ -935,6 +1003,18 @@ impl BacktestSimulator {
         println!("{}", "-".repeat(60));
         println!("Total races: {}", result.total_races);
         println!("Races with bets: {}", result.races_with_bets);
+        if self.config.lookahead_free {
+            let total = result.total_races.max(1);
+            println!(
+                "Races excluded (no pre-deadline odds): {} ({:.1}%)",
+                result.races_excluded_no_predeadline_odds,
+                result.races_excluded_no_predeadline_odds as f64 / total as f64 * 100.0
+            );
+            println!(
+                "Races fell back to synthetic: {}",
+                result.races_fell_back_to_synthetic
+            );
+        }
         println!("Total bets: {}", result.bets.len());
         println!(
             "Winning bets: {}",

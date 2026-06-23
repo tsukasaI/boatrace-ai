@@ -47,6 +47,8 @@ pub struct BacktestConfigOutput {
     pub max_odds: Option<f64>,
     pub test_start_date: Option<u32>,
     pub use_synthetic_odds: bool,
+    pub lookahead_free: bool,
+    pub snapshot_dir: Option<String>,
 }
 
 impl From<&BacktestConfig> for BacktestConfigOutput {
@@ -59,6 +61,11 @@ impl From<&BacktestConfig> for BacktestConfigOutput {
             max_odds: config.max_odds,
             test_start_date: config.test_start_date,
             use_synthetic_odds: config.use_synthetic_odds,
+            lookahead_free: config.lookahead_free,
+            snapshot_dir: config
+                .snapshot_dir
+                .as_ref()
+                .map(|p| p.display().to_string()),
         }
     }
 }
@@ -74,6 +81,8 @@ pub struct BacktestSummaryOutput {
     pub total_payout: i64,
     pub total_profit: i64,
     pub roi: f64,
+    pub races_excluded_no_predeadline_odds: usize,
+    pub races_fell_back_to_synthetic: usize,
 }
 
 impl From<&BacktestResult> for BacktestSummaryOutput {
@@ -88,6 +97,8 @@ impl From<&BacktestResult> for BacktestSummaryOutput {
             total_payout: result.total_payout,
             total_profit: result.total_profit(),
             roi: result.roi(),
+            races_excluded_no_predeadline_odds: result.races_excluded_no_predeadline_odds,
+            races_fell_back_to_synthetic: result.races_fell_back_to_synthetic,
         }
     }
 }
@@ -161,6 +172,8 @@ impl BacktestOutput {
             "avg_probability",
             "profit_factor",
             "max_drawdown",
+            "races_excluded_no_predeadline_odds",
+            "races_fell_back_to_synthetic",
         ])
         .map_err(csv_to_io_error)?;
 
@@ -182,6 +195,8 @@ impl BacktestOutput {
             format!("{:.4}", metrics.map(|m| m.avg_probability).unwrap_or(0.0)),
             format!("{:.4}", metrics.map(|m| m.profit_factor).unwrap_or(0.0)),
             metrics.map(|m| m.max_drawdown).unwrap_or(0).to_string(),
+            self.summary.races_excluded_no_predeadline_odds.to_string(),
+            self.summary.races_fell_back_to_synthetic.to_string(),
         ])
         .map_err(csv_to_io_error)?;
 
@@ -295,6 +310,8 @@ mod tests {
             use_synthetic_odds: false,
             bet_by_probability: false,
             max_odds: None,
+            lookahead_free: false,
+            snapshot_dir: None,
         }
     }
 

@@ -144,9 +144,38 @@ fn deadline_instant(date: u32, deadline: &str) -> Option<DateTime<FixedOffset>> 
         .single()
 }
 
-/// Scan `snapshot_dir` for snapshots of one race and pick the latest captured
-/// strictly before its deadline. `trifecta` selects which filename family to
-/// read (`_3t.json` vs exacta `.json`).
+/// Capture instant of a snapshot iff it is verifiably pre-deadline: it has a
+/// parseable deadline and a parseable timestamp strictly before that deadline.
+/// `None` (fail-closed) when the deadline or timestamp is missing/unparseable or
+/// the capture is at/after the deadline.
+fn predeadline_capture_instant(snap: &SnapshotFile) -> Option<DateTime<FixedOffset>> {
+    let deadline_at = deadline_instant(snap.date, snap.deadline.as_deref()?)?;
+    let captured_at = parse_scraped_at(&snap.scraped_at)?;
+    (captured_at < deadline_at).then_some(captured_at)
+}
+
+/// Pick the latest pre-deadline snapshot from one race's candidates.
+/// Empty input -> `NoSnapshots`; non-empty but none verifiably pre-deadline ->
+/// `OnlyPostClose` (fail-closed). The latest survivor is chosen by parsed instant,
+/// not filename order, which is unreliable across mixed RFC3339 offsets.
+fn choose_predeadline(snaps: &[SnapshotFile]) -> SnapshotSelection {
+    if snaps.is_empty() {
+        return SnapshotSelection::NoSnapshots;
+    }
+    let best = snaps
+        .iter()
+        .filter_map(|s| predeadline_capture_instant(s).map(|at| (at, s)))
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, s)| s);
+    match best {
+        Some(snap) => SnapshotSelection::Selected(snap.clone()),
+        None => SnapshotSelection::OnlyPostClose,
+    }
+}
+
+/// Read all snapshot files for one race from `snapshot_dir` (the per-race path,
+/// used by the standalone loaders and tests). `trifecta` selects the filename
+/// family (`_3t.json` vs exacta `.json`).
 fn select_predeadline_snapshot(
     snapshot_dir: &Path,
     date: u32,
@@ -159,56 +188,134 @@ fn select_predeadline_snapshot(
         Ok(entries) => entries,
         Err(_) => return SnapshotSelection::NoSnapshots,
     };
+    let snaps: Vec<SnapshotFile> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            if !name.starts_with(&prefix) || !name.ends_with(".json") {
+                return None;
+            }
+            // Exacta and trifecta share the prefix; disambiguate by the _3t suffix.
+            if name.ends_with("_3t.json") != trifecta {
+                return None;
+            }
+            let content = fs::read_to_string(entry.path()).ok()?;
+            serde_json::from_str::<SnapshotFile>(&content).ok()
+        })
+        .collect();
+    choose_predeadline(&snaps)
+}
 
-    let mut any_matched = false;
-    let mut best: Option<(DateTime<FixedOffset>, SnapshotFile)> = None;
+/// Convert a raw selection into an exacta `PreDeadlineOdds`, parsing odds keys.
+fn selection_to_exacta(selection: SnapshotSelection) -> PreDeadlineOdds<(u8, u8)> {
+    match selection {
+        SnapshotSelection::Selected(snap) => PreDeadlineOdds::Selected {
+            odds: snap
+                .odds
+                .iter()
+                .filter_map(|(k, &v)| parse_exacta_key(k).map(|key| (key, v)))
+                .collect(),
+            scraped_at: snap.scraped_at,
+            deadline: snap.deadline.unwrap_or_default(),
+            deadline_exact: snap.deadline_exact,
+        },
+        SnapshotSelection::OnlyPostClose => PreDeadlineOdds::OnlyPostClose,
+        SnapshotSelection::NoSnapshots => PreDeadlineOdds::NoSnapshots,
+    }
+}
 
-    for entry in entries.flatten() {
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
-        if !name.starts_with(&prefix) || !name.ends_with(".json") {
-            continue;
-        }
-        // Exacta and trifecta share the prefix; disambiguate by the _3t suffix.
-        if name.ends_with("_3t.json") != trifecta {
-            continue;
-        }
-        any_matched = true;
+/// Convert a raw selection into a trifecta `PreDeadlineOdds`, parsing odds keys.
+fn selection_to_trifecta(selection: SnapshotSelection) -> PreDeadlineOdds<(u8, u8, u8)> {
+    match selection {
+        SnapshotSelection::Selected(snap) => PreDeadlineOdds::Selected {
+            odds: snap
+                .odds
+                .iter()
+                .filter_map(|(k, &v)| parse_trifecta_key(k).map(|key| (key, v)))
+                .collect(),
+            scraped_at: snap.scraped_at,
+            deadline: snap.deadline.unwrap_or_default(),
+            deadline_exact: snap.deadline_exact,
+        },
+        SnapshotSelection::OnlyPostClose => PreDeadlineOdds::OnlyPostClose,
+        SnapshotSelection::NoSnapshots => PreDeadlineOdds::NoSnapshots,
+    }
+}
 
-        let Ok(content) = fs::read_to_string(entry.path()) else {
-            continue;
-        };
-        let Ok(snap) = serde_json::from_str::<SnapshotFile>(&content) else {
-            continue;
-        };
-        // Fail-closed: require a deadline and a parseable, strictly-earlier capture.
-        let Some(deadline) = snap.deadline.as_deref() else {
-            continue;
-        };
-        let Some(deadline_at) = deadline_instant(snap.date, deadline) else {
-            continue;
-        };
-        let Some(captured_at) = parse_scraped_at(&snap.scraped_at) else {
-            continue;
-        };
-        if captured_at >= deadline_at {
-            continue;
+/// Parse the race key from a snapshot filename `{date}_{stadium}_{race}_{ts}...`.
+fn parse_snapshot_race_key(filename: &str) -> Option<(u32, u8, u8)> {
+    let parts: Vec<&str> = filename.split('_').collect();
+    if parts.len() < 4 {
+        return None;
+    }
+    let date: u32 = parts[0].parse().ok()?;
+    let stadium: u8 = parts[1].parse().ok()?;
+    let race: u8 = parts[2].parse().ok()?;
+    Some((date, stadium, race))
+}
+
+/// All snapshots under a directory, scanned once and grouped by race, so a
+/// backtest can select per-race pre-deadline odds without re-reading the
+/// directory for every race (which would be O(races × files)).
+pub struct SnapshotIndex {
+    /// Keyed by `(date, stadium_code, race_no, is_trifecta)`.
+    by_race: HashMap<(u32, u8, u8, bool), Vec<SnapshotFile>>,
+}
+
+impl SnapshotIndex {
+    /// Scan `snapshot_dir` once. A missing or unreadable directory yields an
+    /// empty index (every race resolves to `NoSnapshots`).
+    pub fn load<P: AsRef<Path>>(snapshot_dir: P) -> Self {
+        let mut by_race: HashMap<(u32, u8, u8, bool), Vec<SnapshotFile>> = HashMap::new();
+        if let Ok(entries) = fs::read_dir(snapshot_dir) {
+            for entry in entries.flatten() {
+                let Ok(name) = entry.file_name().into_string() else {
+                    continue;
+                };
+                if !name.ends_with(".json") {
+                    continue;
+                }
+                let is_trifecta = name.ends_with("_3t.json");
+                let Some((date, stadium, race)) = parse_snapshot_race_key(&name) else {
+                    continue;
+                };
+                let Ok(content) = fs::read_to_string(entry.path()) else {
+                    continue;
+                };
+                let Ok(snap) = serde_json::from_str::<SnapshotFile>(&content) else {
+                    continue;
+                };
+                by_race
+                    .entry((date, stadium, race, is_trifecta))
+                    .or_default()
+                    .push(snap);
+            }
         }
-        // Keep the chronologically latest survivor (by parsed instant, not
-        // filename order, which is unreliable across mixed RFC3339 offsets).
-        if best
-            .as_ref()
-            .is_none_or(|(best_at, _)| captured_at > *best_at)
-        {
-            best = Some((captured_at, snap));
+        Self { by_race }
+    }
+
+    fn select(&self, date: u32, stadium: u8, race: u8, trifecta: bool) -> SnapshotSelection {
+        match self.by_race.get(&(date, stadium, race, trifecta)) {
+            Some(snaps) => choose_predeadline(snaps),
+            None => SnapshotSelection::NoSnapshots,
         }
     }
 
-    match best {
-        Some((_, snap)) => SnapshotSelection::Selected(snap),
-        None if any_matched => SnapshotSelection::OnlyPostClose,
-        None => SnapshotSelection::NoSnapshots,
+    /// Latest pre-deadline exacta odds for a race, lookahead-free.
+    #[must_use]
+    pub fn select_exacta(&self, date: u32, stadium: u8, race: u8) -> PreDeadlineOdds<(u8, u8)> {
+        selection_to_exacta(self.select(date, stadium, race, false))
+    }
+
+    /// Latest pre-deadline trifecta odds for a race, lookahead-free.
+    #[must_use]
+    pub fn select_trifecta(
+        &self,
+        date: u32,
+        stadium: u8,
+        race: u8,
+    ) -> PreDeadlineOdds<(u8, u8, u8)> {
+        selection_to_trifecta(self.select(date, stadium, race, true))
     }
 }
 
@@ -222,23 +329,13 @@ pub fn load_predeadline_exacta_odds<P: AsRef<Path>>(
     stadium_code: u8,
     race_no: u8,
 ) -> PreDeadlineOdds<(u8, u8)> {
-    match select_predeadline_snapshot(snapshot_dir.as_ref(), date, stadium_code, race_no, false) {
-        SnapshotSelection::Selected(snap) => {
-            let odds = snap
-                .odds
-                .iter()
-                .filter_map(|(k, &v)| parse_exacta_key(k).map(|key| (key, v)))
-                .collect();
-            PreDeadlineOdds::Selected {
-                odds,
-                scraped_at: snap.scraped_at,
-                deadline: snap.deadline.unwrap_or_default(),
-                deadline_exact: snap.deadline_exact,
-            }
-        }
-        SnapshotSelection::OnlyPostClose => PreDeadlineOdds::OnlyPostClose,
-        SnapshotSelection::NoSnapshots => PreDeadlineOdds::NoSnapshots,
-    }
+    selection_to_exacta(select_predeadline_snapshot(
+        snapshot_dir.as_ref(),
+        date,
+        stadium_code,
+        race_no,
+        false,
+    ))
 }
 
 /// Load the latest pre-deadline trifecta snapshot for a race, lookahead-free.
@@ -248,23 +345,13 @@ pub fn load_predeadline_trifecta_odds<P: AsRef<Path>>(
     stadium_code: u8,
     race_no: u8,
 ) -> PreDeadlineOdds<(u8, u8, u8)> {
-    match select_predeadline_snapshot(snapshot_dir.as_ref(), date, stadium_code, race_no, true) {
-        SnapshotSelection::Selected(snap) => {
-            let odds = snap
-                .odds
-                .iter()
-                .filter_map(|(k, &v)| parse_trifecta_key(k).map(|key| (key, v)))
-                .collect();
-            PreDeadlineOdds::Selected {
-                odds,
-                scraped_at: snap.scraped_at,
-                deadline: snap.deadline.unwrap_or_default(),
-                deadline_exact: snap.deadline_exact,
-            }
-        }
-        SnapshotSelection::OnlyPostClose => PreDeadlineOdds::OnlyPostClose,
-        SnapshotSelection::NoSnapshots => PreDeadlineOdds::NoSnapshots,
-    }
+    selection_to_trifecta(select_predeadline_snapshot(
+        snapshot_dir.as_ref(),
+        date,
+        stadium_code,
+        race_no,
+        true,
+    ))
 }
 
 /// Parse exacta key "1-2" to (1, 2)
@@ -582,6 +669,71 @@ mod tests {
         assert_eq!(
             load_predeadline_exacta_odds(&dir, 20260620, 23, 1),
             PreDeadlineOdds::OnlyPostClose
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_snapshot_index_matches_per_race_loader() {
+        // The pre-indexed path must agree with the per-race directory loader.
+        let dir = fixture_dir("index");
+        write_snapshot(
+            &dir,
+            "20260620_23_01_a.json",
+            20260620,
+            "2026-06-20T06:14:00+00:00",
+            Some("15:24"),
+            "1-2",
+        );
+        write_snapshot(
+            &dir,
+            "20260620_23_01_b.json",
+            20260620,
+            "2026-06-20T06:23:00+00:00",
+            Some("15:24"),
+            "3-4",
+        );
+        write_snapshot(
+            &dir,
+            "20260620_23_01_c.json",
+            20260620,
+            "2026-06-20T06:30:00+00:00",
+            Some("15:24"),
+            "5-6",
+        );
+        write_snapshot(
+            &dir,
+            "20260620_23_02_a.json",
+            20260620,
+            "2026-06-20T06:50:00+00:00",
+            Some("16:00"),
+            "1-2",
+        );
+
+        let index = SnapshotIndex::load(&dir);
+        // R1: the 06:23Z capture wins (latest before 06:24Z); index == per-race loader.
+        assert_eq!(
+            index.select_exacta(20260620, 23, 1),
+            load_predeadline_exacta_odds(&dir, 20260620, 23, 1)
+        );
+        match index.select_exacta(20260620, 23, 1) {
+            PreDeadlineOdds::Selected {
+                scraped_at, odds, ..
+            } => {
+                assert!(scraped_at.starts_with("2026-06-20T06:23"));
+                assert_eq!(odds.get(&(3, 4)), Some(&5.6));
+            }
+            other => panic!("expected Selected, got {other:?}"),
+        }
+        // A race absent from the index resolves to NoSnapshots.
+        assert_eq!(
+            index.select_exacta(20260620, 23, 9),
+            PreDeadlineOdds::NoSnapshots
+        );
+        // A missing directory yields an empty index, not a panic.
+        assert_eq!(
+            SnapshotIndex::load(dir.join("missing")).select_exacta(20260620, 23, 1),
+            PreDeadlineOdds::NoSnapshots
         );
         fs::remove_dir_all(&dir).unwrap();
     }

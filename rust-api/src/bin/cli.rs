@@ -135,6 +135,15 @@ enum Commands {
         #[arg(long)]
         max_odds: Option<f64>,
 
+        /// Decide bets from the latest odds snapshot captured strictly before each
+        /// race's deadline (fail-closed), instead of post-close settled odds
+        #[arg(long)]
+        lookahead_free: bool,
+
+        /// Directory of accumulated odds snapshots for --lookahead-free (default: odds dir)
+        #[arg(long)]
+        snapshot_dir: Option<PathBuf>,
+
         /// Output format: table (default), json, csv
         #[arg(long, default_value = "table")]
         output_format: String,
@@ -319,6 +328,8 @@ fn main() -> Result<()> {
                 synthetic_odds,
                 by_prob,
                 max_odds,
+                lookahead_free,
+                snapshot_dir,
                 output_format,
                 output_file,
                 detailed,
@@ -338,6 +349,8 @@ fn main() -> Result<()> {
                     synthetic_odds,
                     by_prob,
                     max_odds,
+                    lookahead_free,
+                    snapshot_dir,
                     &output_format,
                     output_file.as_deref(),
                     detailed,
@@ -848,6 +861,8 @@ fn run_backtest(
     synthetic_odds: bool,
     by_prob: bool,
     max_odds: Option<f64>,
+    lookahead_free: bool,
+    snapshot_dir: Option<PathBuf>,
     output_format: &str,
     output_file: Option<&Path>,
     detailed: bool,
@@ -882,6 +897,8 @@ fn run_backtest(
         use_synthetic_odds: synthetic_odds,
         bet_by_probability: by_prob,
         max_odds,
+        lookahead_free,
+        snapshot_dir,
     };
 
     if is_table {
@@ -902,6 +919,10 @@ fn run_backtest(
         }
         if synthetic_odds {
             println!("Synthetic odds: enabled");
+        }
+        if config.lookahead_free {
+            let sdir = config.snapshot_dir.as_deref().unwrap_or(odds_dir).display();
+            println!("Lookahead-free: enabled (snapshots: {})", sdir);
         }
         if let Some(mo) = max_odds {
             println!("Max odds: {:.1}", mo);
@@ -2011,6 +2032,8 @@ fn run_interactive(data_dir: &Path, odds_dir: &Path, model_dir: &Path) -> Result
                     Some(20240701),
                     None,
                     false,
+                    false,
+                    None,
                     false,
                     None,
                     "table",
