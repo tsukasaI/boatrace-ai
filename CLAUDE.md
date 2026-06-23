@@ -215,6 +215,39 @@ boat scrape -d 20240115 -s 23
 boat scrape -d 20240115 -s 23 --trifecta
 ```
 
+### Pre-deadline Odds Collection (A1)
+
+`scrape` overwrites a single post-close file per race, which is the source of the
+lookahead bias. `snapshot` / `snapshot-day` instead accumulate **timestamped,
+non-overwriting** snapshots tagged with each race's deadline (`締切予定時刻`), so a
+lookahead-free backtest (`backtest --lookahead-free`) can select the latest capture
+*before* betting closed. Snapshots go to `data/odds_snapshots/` (separate from `data/odds/`).
+
+```bash
+# One pass now for one stadium (manual / cron-friendly)
+boat snapshot -d 20240115 -s 23
+
+# Whole-day collection: capture every active stadium/race at fixed offsets
+# (default 60,30,10,3,1 min) before each deadline. Runs in the foreground all day.
+boat snapshot-day                              # today, all active stadiums
+boat snapshot-day -s 23,12 --offsets-min 30,10,3,1
+boat snapshot-day --once                       # single pass now (for cron/launchd)
+```
+
+- **Deadlines** come from the scraped `締切予定時刻`; if a race's deadline is missing it
+  is approximated from the race number (`10:30 + (race-1)*35min`) and the snapshot is
+  flagged `deadline_exact: false` so the backtest can treat it conservatively. The
+  lookahead-free loader still excludes any capture whose `scraped_at` is not strictly
+  before the deadline, so an approximation cannot leak post-close odds.
+- **Timezone**: deadlines are JST (`Asia/Tokyo`, no DST), handled as a fixed `+09:00`
+  offset in both the collector and the backtest loader.
+- `--once` ignores offsets and captures each race once immediately — use it as the
+  integration point for an external scheduler (cron/launchd) every N minutes; the
+  internal loop is the single-foreground-process default.
+- **Paths are CWD-relative.** From `rust-api/`, `--out-dir`/`--snapshot-dir` default to
+  `rust-api/data/odds_snapshots`; collect and backtest from the same CWD (or pass an
+  explicit absolute path) so the backtest reads what `snapshot-day` wrote.
+
 ### Parse Raw Data
 ```bash
 boat parse -i ../data/raw/programs -o ../data/processed -t programs

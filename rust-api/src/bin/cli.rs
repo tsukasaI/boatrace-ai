@@ -217,6 +217,48 @@ enum Commands {
         out_dir: PathBuf,
     },
 
+    /// Collect pre-deadline odds snapshots across a whole race day (A1)
+    ///
+    /// Drives `snapshot` in a deadline-aware timed loop: for each active stadium
+    /// and race it captures odds at fixed offsets before the betting deadline, so
+    /// a lookahead-free backtest (`backtest --lookahead-free`) has pre-deadline
+    /// history. Runs in the foreground for the day; use --once for a single pass
+    /// (cron/launchd integration).
+    #[cfg(feature = "scraper")]
+    SnapshotDay {
+        /// Race date (YYYYMMDD). Defaults to today (local).
+        #[arg(short, long)]
+        date: Option<u32>,
+
+        /// Stadium codes (comma-separated). Defaults to all active stadiums.
+        #[arg(short, long, value_delimiter = ',')]
+        stadiums: Option<Vec<u8>>,
+
+        /// Race numbers (comma-separated). Defaults to all 12.
+        #[arg(short, long, value_delimiter = ',')]
+        races: Option<Vec<u8>>,
+
+        /// Capture trifecta (3連単) instead of exacta (2連単)
+        #[arg(long)]
+        trifecta: bool,
+
+        /// Minutes-before-deadline capture offsets (comma-separated)
+        #[arg(long, value_delimiter = ',', default_value = "60,30,10,3,1")]
+        offsets_min: Vec<i64>,
+
+        /// Delay between requests in milliseconds
+        #[arg(long, default_value = "2000")]
+        delay: u64,
+
+        /// Output directory for snapshots
+        #[arg(long, default_value = DEFAULT_SNAPSHOT_DIR)]
+        out_dir: PathBuf,
+
+        /// Capture each race once immediately (offsets ignored); for cron/launchd
+        #[arg(long)]
+        once: bool,
+    },
+
     /// Today's race prediction workflow (scrape + predict)
     #[cfg(feature = "scraper")]
     Today {
@@ -385,6 +427,28 @@ fn main() -> Result<()> {
                 out_dir,
             } => {
                 run_snapshot(&out_dir, date, stadium, race, trifecta, delay)?;
+            }
+            #[cfg(feature = "scraper")]
+            Commands::SnapshotDay {
+                date,
+                stadiums,
+                races,
+                trifecta,
+                offsets_min,
+                delay,
+                out_dir,
+                once,
+            } => {
+                run_snapshot_day(
+                    &out_dir,
+                    date,
+                    stadiums,
+                    races,
+                    trifecta,
+                    &offsets_min,
+                    delay,
+                    once,
+                )?;
             }
             #[cfg(feature = "scraper")]
             Commands::Today {
@@ -1319,6 +1383,242 @@ fn run_snapshot(
         out_dir
     );
 
+    Ok(())
+}
+
+/// A single scheduled odds capture for [`run_snapshot_day`].
+#[cfg(feature = "scraper")]
+struct CaptureTarget {
+    stadium: u8,
+    race_no: u8,
+    deadline: Option<String>,
+    deadline_exact: bool,
+    /// Wall-clock time (JST) at which to capture.
+    fire_at: chrono::DateTime<chrono::FixedOffset>,
+}
+
+/// Collect pre-deadline odds snapshots across a race day (A1). Schedules a
+/// capture at each offset before every race's deadline and fires them in time
+/// order, reusing the same `OddsScraper` (one shared rate limiter) and the
+/// non-overwriting [`save_snapshot`] primitive as `run_snapshot`.
+#[cfg(feature = "scraper")]
+#[allow(clippy::too_many_arguments)]
+fn run_snapshot_day(
+    out_dir: &Path,
+    date: Option<u32>,
+    stadiums: Option<Vec<u8>>,
+    races: Option<Vec<u8>>,
+    trifecta: bool,
+    offsets_min: &[i64],
+    delay: u64,
+    once: bool,
+) -> Result<()> {
+    use boatrace::scraper::approximate_deadline;
+    use chrono::TimeZone;
+
+    let date = match date {
+        Some(d) => d,
+        None => chrono::Local::now()
+            .format("%Y%m%d")
+            .to_string()
+            .parse()
+            .context("Failed to derive today's date")?,
+    };
+    validate_date(date)?;
+
+    let bet_type = if trifecta { "trifecta" } else { "exacta" };
+    // Boatrace deadlines are Asia/Tokyo and have no DST, so a fixed +9h offset is
+    // exact — matching the lookahead-free backtest loader's timezone handling.
+    let jst = chrono::FixedOffset::east_opt(9 * 3600).expect("valid JST offset");
+    let deadline_to_jst = |hhmm: &str| -> Option<chrono::DateTime<chrono::FixedOffset>> {
+        let (h, m) = hhmm.split_once(':')?;
+        let hour: u32 = h.parse().ok()?;
+        let minute: u32 = m.parse().ok()?;
+        let year = i32::try_from(date / 10000).ok()?;
+        jst.with_ymd_and_hms(year, date / 100 % 100, date % 100, hour, minute, 0)
+            .single()
+    };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("Failed to create tokio runtime")?;
+    let config = ScraperConfig {
+        delay_ms: delay,
+        ..Default::default()
+    };
+    let scraper = OddsScraper::new(config);
+    std::fs::create_dir_all(out_dir)
+        .with_context(|| format!("Failed to create snapshot directory: {:?}", out_dir))?;
+
+    // Resolve stadiums: explicit list, else all active stadiums for the date.
+    let stadium_codes: Vec<u8> = match stadiums {
+        Some(list) => list,
+        None => match rt.block_on(scraper.scrape_schedule(date)) {
+            Ok(s) => s.stadiums.into_iter().map(|st| st.code).collect(),
+            Err(e) => anyhow::bail!(
+                "Could not fetch active stadiums: {}. Pass --stadiums to specify.",
+                e
+            ),
+        },
+    };
+    if stadium_codes.is_empty() {
+        anyhow::bail!("No active stadiums for {}", date);
+    }
+    for &s in &stadium_codes {
+        if !(1..=24).contains(&s) {
+            anyhow::bail!("Stadium code must be 1-24, got {}", s);
+        }
+    }
+
+    println!(
+        "{}: {} for {} across {} stadium(s){}",
+        "SnapshotDay".green(),
+        bet_type,
+        date,
+        stadium_codes.len(),
+        if once { " (--once)" } else { "" }
+    );
+
+    // Build capture targets. One racelist request per stadium yields all 12
+    // deadlines (index 0 == R1); missing deadlines fall back to an approximation.
+    let now_jst = || chrono::Utc::now().with_timezone(&jst);
+    let mut targets: Vec<CaptureTarget> = Vec::new();
+    for &stadium in &stadium_codes {
+        let deadlines = rt
+            .block_on(scraper.scrape_race_deadlines(date, stadium))
+            .unwrap_or_else(|e| {
+                eprintln!(
+                    "{}: could not fetch deadlines for stadium {}: {}",
+                    "Warning".yellow(),
+                    stadium,
+                    e
+                );
+                Vec::new()
+            });
+        let race_nos: Vec<u8> = match &races {
+            Some(r) => r.clone(),
+            None => (1..=12).collect(),
+        };
+        for race_no in race_nos {
+            let scraped = deadlines.get((race_no as usize).saturating_sub(1)).cloned();
+            let (deadline, deadline_exact) = match scraped {
+                Some(d) => (Some(d), true),
+                None => (Some(approximate_deadline(race_no)), false),
+            };
+            if once {
+                // One capture now per race; offsets are ignored (cron-style).
+                targets.push(CaptureTarget {
+                    stadium,
+                    race_no,
+                    deadline,
+                    deadline_exact,
+                    fire_at: now_jst(),
+                });
+            } else if let Some(dl) = deadline.as_deref().and_then(deadline_to_jst) {
+                for &off in offsets_min {
+                    targets.push(CaptureTarget {
+                        stadium,
+                        race_no,
+                        deadline: deadline.clone(),
+                        deadline_exact,
+                        fire_at: dl - chrono::Duration::minutes(off),
+                    });
+                }
+            }
+        }
+    }
+    targets.sort_by_key(|t| t.fire_at);
+    println!("Scheduled {} capture(s).\n", targets.len());
+
+    // Drop targets already well past their fire time so a loop that fell behind
+    // (or started late) does not capture post-close odds.
+    let grace = chrono::Duration::seconds(120);
+    let mut success = 0usize;
+    let mut skipped = 0usize;
+    for t in targets {
+        if !once {
+            let now = now_jst();
+            if t.fire_at < now - grace {
+                skipped += 1;
+                eprintln!(
+                    "  s{:02} R{:<2} {} (fire {} already past)",
+                    t.stadium,
+                    t.race_no,
+                    "skip".yellow(),
+                    t.fire_at.format("%H:%M")
+                );
+                continue;
+            }
+            if t.fire_at > now {
+                let wait = (t.fire_at - now).to_std().unwrap_or_default();
+                println!(
+                    "  waiting {}s for s{:02} R{} @ {}",
+                    wait.as_secs(),
+                    t.stadium,
+                    t.race_no,
+                    t.fire_at.format("%H:%M")
+                );
+                std::thread::sleep(wait);
+            }
+        }
+
+        let deadline = t.deadline.clone();
+        let result = rt.block_on(async {
+            let (scraped_at, odds) = if trifecta {
+                let o = scraper.scrape_trifecta(date, t.stadium, t.race_no).await?;
+                (o.scraped_at, o.trifecta)
+            } else {
+                let o = scraper.scrape_exacta(date, t.stadium, t.race_no).await?;
+                (o.scraped_at, o.exacta)
+            };
+            let snapshot = OddsSnapshot {
+                date,
+                stadium_code: t.stadium,
+                race_no: t.race_no,
+                scraped_at,
+                deadline_exact: t.deadline_exact,
+                deadline: deadline.clone(),
+                bet_type: bet_type.to_string(),
+                odds,
+            };
+            let count = snapshot.odds.len();
+            let path = save_snapshot(out_dir, &snapshot).context("Failed to save snapshot")?;
+            Ok::<_, anyhow::Error>((path, count))
+        });
+
+        match result {
+            Ok((_, count)) => {
+                success += 1;
+                println!(
+                    "  s{:02} R{:<2} {} ({} combos, deadline {}{})",
+                    t.stadium,
+                    t.race_no,
+                    "saved".green(),
+                    count,
+                    deadline.as_deref().unwrap_or("unknown"),
+                    if t.deadline_exact { "" } else { " ~approx" }
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "  s{:02} R{:<2} {}: {}",
+                    t.stadium,
+                    t.race_no,
+                    "failed".red(),
+                    e
+                );
+            }
+        }
+    }
+
+    println!(
+        "\n{}: {} snapshot(s) saved, {} skipped, to {:?}",
+        "Complete".green(),
+        success,
+        skipped,
+        out_dir
+    );
     Ok(())
 }
 
