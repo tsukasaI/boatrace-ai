@@ -15,10 +15,14 @@ This is a Japanese boat racing (Kyotei) AI prediction system. The goal is to pre
 >    A model only has to beat a naive lane-number baseline to show positive ROI. These
 >    numbers are valid **only for relative comparisons** (old model vs new model), never as
 >    a real-money forecast.
-> 2. **Real-odds ROI (+45.7%, +32.5%, etc.) has lookahead bias.** The backtest decides
->    bets using the **final settled pari-mutuel odds**, which are unknown until after betting
->    closes (`odds_loader` ignores `scraped_at`; only one post-close snapshot exists per race).
->    A lookahead-free result requires pre-deadline odds snapshots, which are not yet collected.
+> 2. **Real-odds ROI (+45.7%, +32.5%, etc.) has lookahead bias.** The *default* backtest
+>    decides bets using the **final settled pari-mutuel odds**, which are unknown until after
+>    betting closes (`load_exacta_odds` ignores `scraped_at`; only one post-close snapshot
+>    exists per race). A lookahead-free path now exists (`backtest --lookahead-free`, A2): it
+>    selects the latest snapshot captured strictly before each race's deadline and excludes
+>    races without one (fail-closed). It is **not yet validated on real money** because A1
+>    (pre-deadline snapshot collection, the `SnapshotDay` command) has not been run across
+>    live race days, so every historical race is currently excluded.
 > 3. **Train/serve skew.** `exhibition_time` and weather features are trained from the
 >    *results* file but the live `today` path can't supply them (falls back to defaults), so
 >    backtest accuracy overstates live accuracy.
@@ -375,6 +379,33 @@ boat backtest --all-data --model-dir ../models/onnx
 boat backtest --all-data --model-dir ../models/onnx --max-odds 30
 ```
 
+### Lookahead-free backtest (A2)
+
+The options above use **post-close settled odds** and therefore have lookahead bias (see
+the audit note at the top). `--lookahead-free` removes it: for each race it selects the
+latest odds snapshot captured **strictly before** the betting deadline (`締切予定時刻`),
+using the snapshot's embedded `deadline` + `scraped_at`. It is **fail-closed** — a race
+with no verifiable pre-deadline snapshot (none captured before close, or a missing/
+unparseable deadline/timestamp, including the legacy single-file `data/odds/*.json` which
+carry no deadline) is **not** bet on post-close odds. Instead it is excluded and counted,
+or routed to synthetic odds if `--synthetic-odds` is also set.
+
+```bash
+# Lookahead-free: decide bets only from pre-deadline snapshots
+boat backtest --all-data --model-dir ../models/onnx \
+  --lookahead-free --snapshot-dir ../data/odds_snapshots
+```
+
+- `--snapshot-dir` defaults to the odds dir (`--odds-dir`, default `data/odds`); point it at
+  where `SnapshotDay` (A1) writes accumulated snapshots (`data/odds_snapshots`).
+- Two new counters appear in the summary (table / JSON / CSV): `races_excluded_no_predeadline_odds`
+  and `races_fell_back_to_synthetic`, kept **distinct** so synthetic ROI is never reported as
+  real pre-deadline ROI.
+- **Until A1 collects snapshots, every historical race is excluded** (`races_excluded_no_predeadline_odds
+  == total_races`, 0 bets, ROI 0%). This is correct, not a regression — there is no
+  pre-deadline odds history for 2023–2025 yet (only post-close backfill). Validating real
+  lookahead-free ROI requires running `SnapshotDay` across live race days first.
+
 ### LambdaRank Strategy Comparison (Real Odds)
 
 | Strategy | Bets | Wins | Hit Rate | ROI | Max Drawdown |
@@ -658,18 +689,19 @@ The backtest command supports three output formats via `--output-format`:
 **JSON Output** (`--output-format json`)
 ```json
 {
-  "config": { "ev_threshold": 1.0, "stake": 100, ... },
-  "summary": { "total_bets": 345867, "roi": 1.78, ... },
+  "config": { "ev_threshold": 1.0, "stake": 100, "lookahead_free": false, "snapshot_dir": null, ... },
+  "summary": { "total_bets": 345867, "roi": 1.78, "races_excluded_no_predeadline_odds": 0, "races_fell_back_to_synthetic": 0, ... },
   "metrics": { "hit_rate": 0.082, "profit_factor": 2.94, ... },
   "analysis": { "by_stadium": [...], "by_odds_range": [...] },
   "bets": [...]  // only with --detailed
 }
 ```
 
-**CSV Summary** (`--output-format csv`)
+**CSV Summary** (`--output-format csv`) — the last two columns are populated only under
+`--lookahead-free` (otherwise 0):
 ```
-total_races,races_with_bets,total_bets,winning_bets,hit_rate,total_stake,total_payout,total_profit,roi,avg_ev,avg_odds,avg_probability,profit_factor,max_drawdown
-116664,115317,345867,28245,0.0817,34586700,96304150,61717450,1.7844,3.6980,60.57,0.0932,2.9431,13990
+total_races,races_with_bets,total_bets,winning_bets,hit_rate,total_stake,total_payout,total_profit,roi,avg_ev,avg_odds,avg_probability,profit_factor,max_drawdown,races_excluded_no_predeadline_odds,races_fell_back_to_synthetic
+116664,115317,345867,28245,0.0817,34586700,96304150,61717450,1.7844,3.6980,60.57,0.0932,2.9431,13990,0,0
 ```
 
 **CSV Detailed** (`--output-format csv --detailed`)
