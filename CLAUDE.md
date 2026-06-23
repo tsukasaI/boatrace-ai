@@ -4,6 +4,28 @@
 
 This is a Japanese boat racing (Kyotei) AI prediction system. The goal is to predict exacta (2-consecutive) race outcomes and maximize ROI using expected value-based betting strategy.
 
+> ⚠️ **How to read the ROI numbers in this document (2026-06 audit)**
+>
+> The headline ROI figures below are **not** validated live-tradeable returns. Two
+> structural issues inflate them; treat the numbers as engineering signals, not profit forecasts:
+>
+> 1. **Synthetic-odds ROI (+178%, +127%, etc.) is circular.** Synthetic odds
+>    (`backtesting/synthetic.rs`) are a *fixed course-position prior* (same 30 odds for
+>    every race) with a flat 25% takeout — they carry no race-specific market information.
+>    A model only has to beat a naive lane-number baseline to show positive ROI. These
+>    numbers are valid **only for relative comparisons** (old model vs new model), never as
+>    a real-money forecast.
+> 2. **Real-odds ROI (+45.7%, +32.5%, etc.) has lookahead bias.** The backtest decides
+>    bets using the **final settled pari-mutuel odds**, which are unknown until after betting
+>    closes (`odds_loader` ignores `scraped_at`; only one post-close snapshot exists per race).
+>    A lookahead-free result requires pre-deadline odds snapshots, which are not yet collected.
+> 3. **Train/serve skew.** `exhibition_time` and weather features are trained from the
+>    *results* file but the live `today` path can't supply them (falls back to defaults), so
+>    backtest accuracy overstates live accuracy.
+>
+> A defensible "can this actually win?" answer requires the phased work tracked below
+> (pre-deadline odds collection → lookahead-free backtest → calibration-first evaluation).
+
 ## Tech Stack & Responsibility Split
 
 | Layer | Technology | Purpose |
@@ -323,6 +345,9 @@ with NDCG@1=0.843, reproducing the documented M3 degradation.
 
 ### LambdaRank vs Binary Classifier (Real Odds)
 
+> ⚠️ The real-odds ROI in this section has **lookahead bias** (bets decided on post-close
+> final odds). Use for relative strategy comparison only. See the audit note at the top.
+
 LambdaRank fixes the favorite-longshot bias that plagued the binary classifier:
 
 | Strategy | Binary ROI | LambdaRank ROI | Improvement |
@@ -361,6 +386,10 @@ boat backtest --all-data --model-dir ../models/onnx --max-odds 30
 **Probability strategy recommended**: Highest ROI (+45.7%) with lowest drawdown (¥3,952).
 
 ## Backtest Results (Rust + ONNX + Synthetic Odds)
+
+> ⚠️ Synthetic-odds ROI is **circular** (model vs a fixed lane-number prior, not vs a real
+> market). The +178.4% is a relative model-quality signal, **not** a real-money forecast.
+> See the audit note at the top of this document.
 
 ### Model Comparison
 

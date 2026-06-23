@@ -16,13 +16,17 @@ use boatrace::validation::validate_date;
 use boatrace::{ExactaPrediction, RacerEntry, TrifectaPrediction};
 
 #[cfg(feature = "scraper")]
-use boatrace::scraper::{get_stadium_name as scraper_stadium_name, OddsScraper, ScraperConfig};
+use boatrace::scraper::{
+    get_stadium_name as scraper_stadium_name, save_snapshot, OddsScraper, OddsSnapshot,
+    ScraperConfig,
+};
 
 use boatrace::data::{flatten_payouts, PayoutParser, PayoutRecord, ProgramParser, ResultParser};
 
 /// Default data directory (relative to project root)
 const DEFAULT_DATA_DIR: &str = "data/processed";
 const DEFAULT_ODDS_DIR: &str = "data/odds";
+const DEFAULT_SNAPSHOT_DIR: &str = "data/odds_snapshots";
 const DEFAULT_MODEL_DIR: &str = "models/onnx";
 
 #[derive(Parser)]
@@ -170,6 +174,38 @@ enum Commands {
         /// List all stadium codes
         #[arg(long)]
         list_stadiums: bool,
+    },
+
+    /// Capture a timestamped pre-deadline odds snapshot (never overwrites)
+    ///
+    /// Unlike `scrape`, snapshots accumulate (one file per capture, named by
+    /// timestamp) and record the race deadline, enabling a later lookahead-free
+    /// backtest. Run repeatedly before each race's deadline to build history.
+    #[cfg(feature = "scraper")]
+    Snapshot {
+        /// Race date (YYYYMMDD format)
+        #[arg(short, long)]
+        date: u32,
+
+        /// Stadium code (1-24)
+        #[arg(short, long)]
+        stadium: u8,
+
+        /// Race number (1-12). If not specified, snapshot all 12 races.
+        #[arg(short, long)]
+        race: Option<u8>,
+
+        /// Capture trifecta (3連単) instead of exacta (2連単)
+        #[arg(long)]
+        trifecta: bool,
+
+        /// Delay between requests in milliseconds
+        #[arg(long, default_value = "2000")]
+        delay: u64,
+
+        /// Output directory for snapshots
+        #[arg(long, default_value = DEFAULT_SNAPSHOT_DIR)]
+        out_dir: PathBuf,
     },
 
     /// Today's race prediction workflow (scrape + predict)
@@ -325,6 +361,17 @@ fn main() -> Result<()> {
                     delay,
                     list_stadiums,
                 )?;
+            }
+            #[cfg(feature = "scraper")]
+            Commands::Snapshot {
+                date,
+                stadium,
+                race,
+                trifecta,
+                delay,
+                out_dir,
+            } => {
+                run_snapshot(&out_dir, date, stadium, race, trifecta, delay)?;
             }
             #[cfg(feature = "scraper")]
             Commands::Today {
@@ -1132,6 +1179,124 @@ fn run_scrape(
             odds_dir
         );
     }
+
+    Ok(())
+}
+
+/// Capture timestamped, non-overwriting odds snapshots tagged with each race's
+/// deadline. See the `Snapshot` command docs for why this exists (lookahead-free
+/// backtesting).
+#[cfg(feature = "scraper")]
+fn run_snapshot(
+    out_dir: &Path,
+    date: u32,
+    stadium: u8,
+    race: Option<u8>,
+    trifecta: bool,
+    delay: u64,
+) -> Result<()> {
+    validate_date(date)?;
+    if !(1..=24).contains(&stadium) {
+        anyhow::bail!("Stadium code must be 1-24, got {}", stadium);
+    }
+    if let Some(r) = race {
+        if !(1..=12).contains(&r) {
+            anyhow::bail!("Race number must be 1-12, got {}", r);
+        }
+    }
+
+    let bet_type = if trifecta { "trifecta" } else { "exacta" };
+    println!(
+        "{}: {} {} at {} ({})",
+        "Snapshotting".green(),
+        bet_type,
+        date,
+        scraper_stadium_name(stadium),
+        stadium
+    );
+    println!();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("Failed to create tokio runtime")?;
+
+    let config = ScraperConfig {
+        delay_ms: delay,
+        ..Default::default()
+    };
+    let scraper = OddsScraper::new(config);
+
+    std::fs::create_dir_all(out_dir)
+        .with_context(|| format!("Failed to create snapshot directory: {:?}", out_dir))?;
+
+    // One racelist request yields every race's deadline (index 0 == R1). Fetched
+    // once per stadium rather than per race to respect the request interval.
+    let deadlines = rt
+        .block_on(scraper.scrape_race_deadlines(date, stadium))
+        .unwrap_or_else(|e| {
+            eprintln!("{}: could not fetch deadlines: {}", "Warning".yellow(), e);
+            Vec::new()
+        });
+    let deadline_for = |race_no: u8| deadlines.get((race_no as usize).saturating_sub(1)).cloned();
+
+    let race_nos: Vec<u8> = match race {
+        Some(r) => vec![r],
+        None => (1..=12).collect(),
+    };
+
+    let mut success_count = 0;
+    for race_no in race_nos {
+        let deadline = deadline_for(race_no);
+        let result = rt.block_on(async {
+            let (scraped_at, odds) = if trifecta {
+                let o = scraper.scrape_trifecta(date, stadium, race_no).await?;
+                (o.scraped_at, o.trifecta)
+            } else {
+                let o = scraper.scrape_exacta(date, stadium, race_no).await?;
+                (o.scraped_at, o.exacta)
+            };
+            let snapshot = OddsSnapshot {
+                date,
+                stadium_code: stadium,
+                race_no,
+                scraped_at,
+                // run_snapshot uses scraped 締切予定時刻, so a present deadline is exact.
+                deadline_exact: deadline.is_some(),
+                deadline: deadline.clone(),
+                bet_type: bet_type.to_string(),
+                odds,
+            };
+            let count = snapshot.odds.len();
+            let path = save_snapshot(out_dir, &snapshot).context("Failed to save snapshot")?;
+            Ok::<_, anyhow::Error>((path, count))
+        });
+
+        match result {
+            Ok((path, count)) => {
+                success_count += 1;
+                println!(
+                    "  R{:<2} {} -> {:?} ({} combos, deadline {})",
+                    race_no,
+                    "saved".green(),
+                    path,
+                    count,
+                    deadline.as_deref().unwrap_or("unknown")
+                );
+            }
+            Err(e) => {
+                eprintln!("  R{:<2} {}: {}", race_no, "failed".red(), e);
+            }
+        }
+    }
+
+    println!(
+        "\n{}: {} {} snapshot(s) saved to {:?}",
+        "Complete".green(),
+        success_count,
+        bet_type,
+        out_dir
+    );
 
     Ok(())
 }

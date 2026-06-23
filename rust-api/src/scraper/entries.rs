@@ -299,13 +299,25 @@ fn extract_race_name(document: &Html) -> Option<String> {
 /// followed by one `<td>` per race (R1..R12) holding `HH:MM`. We locate that row
 /// and return the cell for the requested race (1-indexed).
 fn extract_start_time(document: &Html, race_no: u8) -> Option<String> {
-    let td_sel = Selector::parse("td").ok()?;
+    extract_all_start_times(document)
+        .get((race_no as usize).saturating_sub(1))
+        .cloned()
+}
+
+/// Extract every race's scheduled deadline (start) time from the racelist page,
+/// in race order (index 0 == R1).
+///
+/// The page has a single deadline-time row: a `<td>締切予定時刻</td>` header
+/// followed by one `<td>` per race (R1..R12) holding `HH:MM`. The header itself
+/// has no ':' and is filtered out. Returns an empty vec if the row is absent.
+fn extract_all_start_times(document: &Html) -> Vec<String> {
+    let Ok(td_sel) = Selector::parse("td") else {
+        return Vec::new();
+    };
 
     for td in document.select(&td_sel) {
         if td.text().collect::<String>().trim() == "締切予定時刻" {
-            // Collect the sibling time cells in order. The "締切予定時刻" header
-            // itself has no ':' and is filtered out, so index 0 == R1.
-            let times: Vec<String> = td
+            return td
                 .parent()
                 .into_iter()
                 .flat_map(|tr| tr.children())
@@ -314,11 +326,21 @@ fn extract_start_time(document: &Html, race_no: u8) -> Option<String> {
                 .map(|e| e.text().collect::<String>().trim().to_string())
                 .filter(|t| t.contains(':') && t.len() <= 5)
                 .collect();
-            return times.get((race_no as usize).saturating_sub(1)).cloned();
         }
     }
 
-    None
+    Vec::new()
+}
+
+/// Parse every race's deadline time (`締切予定時刻`, `HH:MM`) from racelist HTML,
+/// in race order (index 0 == R1).
+///
+/// The racelist page lists all races' deadlines, so a single fetch yields every
+/// deadline — used to tag pre-deadline odds snapshots without re-fetching the
+/// page per race. A page missing the row yields an empty vec.
+pub fn parse_race_deadlines(html: &str) -> Vec<String> {
+    let document = Html::parse_document(html);
+    extract_all_start_times(&document)
 }
 
 #[cfg(test)]
@@ -404,5 +426,18 @@ mod tests {
         // A page without the deadline row yields None.
         let empty = Html::parse_document("<html><body></body></html>");
         assert_eq!(extract_start_time(&empty, 1), None);
+    }
+
+    #[test]
+    fn test_parse_race_deadlines_all() {
+        let deadlines = parse_race_deadlines(DEADLINE_ROW_HTML);
+        assert_eq!(deadlines.len(), 12);
+        assert_eq!(deadlines[0], "15:24"); // R1
+        assert_eq!(deadlines[11], "20:42"); // R12
+    }
+
+    #[test]
+    fn test_parse_race_deadlines_missing_row() {
+        assert!(parse_race_deadlines("<html><body></body></html>").is_empty());
     }
 }

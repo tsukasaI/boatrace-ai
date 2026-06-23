@@ -1,8 +1,8 @@
 //! HTTP client with rate limiting for boatrace.jp
 
 use super::{
-    parse_exacta_odds, parse_race_entries, parse_schedule, parse_trifecta_odds, ScrapedExactaOdds,
-    ScrapedRaceInfo, ScrapedTrifectaOdds, TodaySchedule,
+    parse_exacta_odds, parse_race_deadlines, parse_race_entries, parse_schedule,
+    parse_trifecta_odds, ScrapedExactaOdds, ScrapedRaceInfo, ScrapedTrifectaOdds, TodaySchedule,
 };
 use chrono::Utc;
 use std::collections::HashMap;
@@ -276,6 +276,26 @@ impl OddsScraper {
 
         let html = self.fetch_page(&url).await?;
         parse_race_entries(&html, date, stadium_code, race_no)
+    }
+
+    /// Scrape every race's deadline time for a stadium in a single request.
+    ///
+    /// The racelist page lists all races' `締切予定時刻`, so one fetch yields every
+    /// deadline (index 0 == R1). Used to tag pre-deadline odds snapshots without
+    /// hitting the page once per race.
+    pub async fn scrape_race_deadlines(
+        &self,
+        date: u32,
+        stadium_code: u8,
+    ) -> Result<Vec<String>, ScraperError> {
+        let url = format!(
+            "{}?rno=1&jcd={:02}&hd={}",
+            BASE_URL_RACELIST, stadium_code, date
+        );
+        tracing::info!("Scraping deadlines: {}", url);
+
+        let html = self.fetch_page(&url).await?;
+        Ok(parse_race_deadlines(&html))
     }
 
     /// Scrape all race entries for a stadium
