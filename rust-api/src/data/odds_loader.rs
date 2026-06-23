@@ -1,5 +1,6 @@
 //! Odds JSON loading for exacta and trifecta odds
 
+use chrono::{DateTime, FixedOffset, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -73,6 +74,197 @@ pub fn load_trifecta_odds<P: AsRef<Path>>(
     }
 
     Some(result)
+}
+
+/// Outcome of selecting a pre-deadline odds snapshot for one race.
+///
+/// `K` is `(u8, u8)` for exacta or `(u8, u8, u8)` for trifecta. The variants are
+/// fail-closed: a race yields usable odds only via [`PreDeadlineOdds::Selected`];
+/// the other two variants both mean "do not bet real odds on this race".
+#[derive(Debug, Clone, PartialEq)]
+pub enum PreDeadlineOdds<K: Eq + std::hash::Hash> {
+    /// The latest snapshot captured strictly before the race's deadline.
+    Selected {
+        odds: HashMap<K, f64>,
+        /// RFC3339 capture time of the chosen snapshot.
+        scraped_at: String,
+        /// The race deadline (`HH:MM`, JST) the capture was checked against.
+        deadline: String,
+        /// Whether the deadline was scraped (`true`) or approximated (`false`).
+        deadline_exact: bool,
+    },
+    /// Snapshot files exist for the race but none are verifiably pre-deadline
+    /// (all captured at/after the deadline, or with an unparseable/absent
+    /// deadline or timestamp). Fail-closed: treated as unusable, not bet.
+    OnlyPostClose,
+    /// No snapshot files exist for the race.
+    NoSnapshots,
+}
+
+/// A snapshot file on disk. A local mirror of `scraper::OddsSnapshot` so the
+/// always-compiled data layer never depends on the optional `scraper` feature.
+/// Unused fields (stadium_code, race_no, bet_type) are intentionally omitted —
+/// serde ignores the extra JSON keys.
+#[derive(Debug, Clone, Deserialize)]
+struct SnapshotFile {
+    date: u32,
+    scraped_at: String,
+    deadline: Option<String>,
+    #[serde(default)]
+    deadline_exact: bool,
+    odds: HashMap<String, f64>,
+}
+
+/// Internal result of scanning the snapshot directory for one race.
+enum SnapshotSelection {
+    Selected(SnapshotFile),
+    OnlyPostClose,
+    NoSnapshots,
+}
+
+/// Parse an RFC3339 timestamp into an absolute instant. Naive timestamps without
+/// an offset (e.g. legacy `2025-12-30T20:24:02.567335`) fail here and are
+/// excluded — they cannot prove they predate a deadline (fail-closed).
+fn parse_scraped_at(s: &str) -> Option<DateTime<FixedOffset>> {
+    DateTime::parse_from_rfc3339(s).ok()
+}
+
+/// Build the deadline instant from a race's `date` (YYYYMMDD) and `HH:MM`,
+/// interpreted as JST (+09:00). Boatrace times are always JST and have no DST,
+/// so a fixed +9h offset is exact — no `chrono-tz` dependency is needed.
+fn deadline_instant(date: u32, deadline: &str) -> Option<DateTime<FixedOffset>> {
+    let year = i32::try_from(date / 10000).ok()?;
+    let month = date / 100 % 100;
+    let day = date % 100;
+    let (hh, mm) = deadline.split_once(':')?;
+    let hour: u32 = hh.parse().ok()?;
+    let minute: u32 = mm.parse().ok()?;
+    let jst = FixedOffset::east_opt(9 * 3600)?;
+    jst.with_ymd_and_hms(year, month, day, hour, minute, 0)
+        .single()
+}
+
+/// Scan `snapshot_dir` for snapshots of one race and pick the latest captured
+/// strictly before its deadline. `trifecta` selects which filename family to
+/// read (`_3t.json` vs exacta `.json`).
+fn select_predeadline_snapshot(
+    snapshot_dir: &Path,
+    date: u32,
+    stadium_code: u8,
+    race_no: u8,
+    trifecta: bool,
+) -> SnapshotSelection {
+    let prefix = format!("{}_{:02}_{:02}_", date, stadium_code, race_no);
+    let entries = match fs::read_dir(snapshot_dir) {
+        Ok(entries) => entries,
+        Err(_) => return SnapshotSelection::NoSnapshots,
+    };
+
+    let mut any_matched = false;
+    let mut best: Option<(DateTime<FixedOffset>, SnapshotFile)> = None;
+
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if !name.starts_with(&prefix) || !name.ends_with(".json") {
+            continue;
+        }
+        // Exacta and trifecta share the prefix; disambiguate by the _3t suffix.
+        if name.ends_with("_3t.json") != trifecta {
+            continue;
+        }
+        any_matched = true;
+
+        let Ok(content) = fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let Ok(snap) = serde_json::from_str::<SnapshotFile>(&content) else {
+            continue;
+        };
+        // Fail-closed: require a deadline and a parseable, strictly-earlier capture.
+        let Some(deadline) = snap.deadline.as_deref() else {
+            continue;
+        };
+        let Some(deadline_at) = deadline_instant(snap.date, deadline) else {
+            continue;
+        };
+        let Some(captured_at) = parse_scraped_at(&snap.scraped_at) else {
+            continue;
+        };
+        if captured_at >= deadline_at {
+            continue;
+        }
+        // Keep the chronologically latest survivor (by parsed instant, not
+        // filename order, which is unreliable across mixed RFC3339 offsets).
+        if best
+            .as_ref()
+            .is_none_or(|(best_at, _)| captured_at > *best_at)
+        {
+            best = Some((captured_at, snap));
+        }
+    }
+
+    match best {
+        Some((_, snap)) => SnapshotSelection::Selected(snap),
+        None if any_matched => SnapshotSelection::OnlyPostClose,
+        None => SnapshotSelection::NoSnapshots,
+    }
+}
+
+/// Load the latest pre-deadline exacta snapshot for a race, lookahead-free.
+///
+/// Returns the odds of the newest snapshot captured strictly before the race's
+/// deadline, or a fail-closed variant when none is verifiably pre-deadline.
+pub fn load_predeadline_exacta_odds<P: AsRef<Path>>(
+    snapshot_dir: P,
+    date: u32,
+    stadium_code: u8,
+    race_no: u8,
+) -> PreDeadlineOdds<(u8, u8)> {
+    match select_predeadline_snapshot(snapshot_dir.as_ref(), date, stadium_code, race_no, false) {
+        SnapshotSelection::Selected(snap) => {
+            let odds = snap
+                .odds
+                .iter()
+                .filter_map(|(k, &v)| parse_exacta_key(k).map(|key| (key, v)))
+                .collect();
+            PreDeadlineOdds::Selected {
+                odds,
+                scraped_at: snap.scraped_at,
+                deadline: snap.deadline.unwrap_or_default(),
+                deadline_exact: snap.deadline_exact,
+            }
+        }
+        SnapshotSelection::OnlyPostClose => PreDeadlineOdds::OnlyPostClose,
+        SnapshotSelection::NoSnapshots => PreDeadlineOdds::NoSnapshots,
+    }
+}
+
+/// Load the latest pre-deadline trifecta snapshot for a race, lookahead-free.
+pub fn load_predeadline_trifecta_odds<P: AsRef<Path>>(
+    snapshot_dir: P,
+    date: u32,
+    stadium_code: u8,
+    race_no: u8,
+) -> PreDeadlineOdds<(u8, u8, u8)> {
+    match select_predeadline_snapshot(snapshot_dir.as_ref(), date, stadium_code, race_no, true) {
+        SnapshotSelection::Selected(snap) => {
+            let odds = snap
+                .odds
+                .iter()
+                .filter_map(|(k, &v)| parse_trifecta_key(k).map(|key| (key, v)))
+                .collect();
+            PreDeadlineOdds::Selected {
+                odds,
+                scraped_at: snap.scraped_at,
+                deadline: snap.deadline.unwrap_or_default(),
+                deadline_exact: snap.deadline_exact,
+            }
+        }
+        SnapshotSelection::OnlyPostClose => PreDeadlineOdds::OnlyPostClose,
+        SnapshotSelection::NoSnapshots => PreDeadlineOdds::NoSnapshots,
+    }
 }
 
 /// Parse exacta key "1-2" to (1, 2)
@@ -186,6 +378,237 @@ mod tests {
         assert_eq!(parse_filename("20240115_03_01"), Some((20240115, 3, 1)));
         assert_eq!(parse_filename("20231231_24_12"), Some((20231231, 24, 12)));
         assert_eq!(parse_filename("invalid"), None);
+    }
+
+    /// Write a snapshot JSON file into `dir`. `deadline` of `None` omits the key.
+    fn write_snapshot(
+        dir: &Path,
+        filename: &str,
+        date: u32,
+        scraped_at: &str,
+        deadline: Option<&str>,
+        odds_key: &str,
+    ) {
+        let deadline_field = match deadline {
+            Some(d) => format!("\"deadline\": \"{d}\",\n"),
+            None => "\"deadline\": null,\n".to_string(),
+        };
+        let json = format!(
+            "{{\n\"date\": {date},\n\"stadium_code\": 23,\n\"race_no\": 1,\n\
+             \"scraped_at\": \"{scraped_at}\",\n{deadline_field}\
+             \"deadline_exact\": true,\n\"bet_type\": \"exacta\",\n\
+             \"odds\": {{ \"{odds_key}\": 5.6 }}\n}}"
+        );
+        fs::write(dir.join(filename), json).unwrap();
+    }
+
+    /// Fresh, empty temp dir unique to a test (cleaned first).
+    fn fixture_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("boatrace_predeadline_{name}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_predeadline_selects_latest_before_deadline() {
+        let dir = fixture_dir("latest");
+        // deadline 15:24 JST = 06:24Z. Three pre-deadline captures + one post.
+        write_snapshot(
+            &dir,
+            "20260620_23_01_a.json",
+            20260620,
+            "2026-06-20T05:24:00+00:00",
+            Some("15:24"),
+            "1-2",
+        );
+        write_snapshot(
+            &dir,
+            "20260620_23_01_b.json",
+            20260620,
+            "2026-06-20T06:14:00+00:00",
+            Some("15:24"),
+            "2-3",
+        );
+        write_snapshot(
+            &dir,
+            "20260620_23_01_c.json",
+            20260620,
+            "2026-06-20T06:23:00+00:00",
+            Some("15:24"),
+            "3-4",
+        );
+        write_snapshot(
+            &dir,
+            "20260620_23_01_d.json",
+            20260620,
+            "2026-06-20T06:30:00+00:00",
+            Some("15:24"),
+            "4-5",
+        );
+
+        let result = load_predeadline_exacta_odds(&dir, 20260620, 23, 1);
+        match result {
+            PreDeadlineOdds::Selected {
+                odds,
+                scraped_at,
+                deadline_exact,
+                ..
+            } => {
+                // The 06:23Z capture (latest still before 06:24Z) wins.
+                assert!(scraped_at.starts_with("2026-06-20T06:23"));
+                assert_eq!(odds.get(&(3, 4)), Some(&5.6));
+                assert!(deadline_exact);
+            }
+            other => panic!("expected Selected, got {other:?}"),
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_predeadline_timezone_straddle() {
+        // The highest-risk bug: comparing JST deadline against UTC scraped_at.
+        // deadline 15:24 JST == 06:24Z. 06:23Z is before; 06:25Z is after.
+        // A naive (no +09:00) comparison would wrongly keep BOTH (both < 15:24
+        // by wall clock) and pick the later 06:25Z — this test catches that.
+        let dir = fixture_dir("tz");
+        write_snapshot(
+            &dir,
+            "20260620_23_01_pre.json",
+            20260620,
+            "2026-06-20T06:23:00+00:00",
+            Some("15:24"),
+            "1-2",
+        );
+        write_snapshot(
+            &dir,
+            "20260620_23_01_post.json",
+            20260620,
+            "2026-06-20T06:25:00+00:00",
+            Some("15:24"),
+            "5-6",
+        );
+
+        match load_predeadline_exacta_odds(&dir, 20260620, 23, 1) {
+            PreDeadlineOdds::Selected {
+                scraped_at, odds, ..
+            } => {
+                assert!(
+                    scraped_at.starts_with("2026-06-20T06:23"),
+                    "must pick the pre-deadline capture, got {scraped_at}"
+                );
+                assert_eq!(odds.get(&(1, 2)), Some(&5.6));
+            }
+            other => panic!("expected Selected, got {other:?}"),
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_predeadline_only_post_close() {
+        let dir = fixture_dir("post");
+        // 06:25Z is after the 06:24Z deadline -> excluded -> OnlyPostClose.
+        write_snapshot(
+            &dir,
+            "20260620_23_01_a.json",
+            20260620,
+            "2026-06-20T06:25:00+00:00",
+            Some("15:24"),
+            "1-2",
+        );
+        assert_eq!(
+            load_predeadline_exacta_odds(&dir, 20260620, 23, 1),
+            PreDeadlineOdds::OnlyPostClose
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_predeadline_no_snapshots() {
+        let dir = fixture_dir("none");
+        // Empty dir, and a different race present, both yield NoSnapshots.
+        write_snapshot(
+            &dir,
+            "20260620_23_02_a.json",
+            20260620,
+            "2026-06-20T06:00:00+00:00",
+            Some("15:24"),
+            "1-2",
+        );
+        assert_eq!(
+            load_predeadline_exacta_odds(&dir, 20260620, 23, 1),
+            PreDeadlineOdds::NoSnapshots
+        );
+        // A non-existent dir is also NoSnapshots, not a panic.
+        assert_eq!(
+            load_predeadline_exacta_odds(dir.join("missing"), 20260620, 23, 1),
+            PreDeadlineOdds::NoSnapshots
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_predeadline_missing_deadline_excluded() {
+        let dir = fixture_dir("nodeadline");
+        // A snapshot without a deadline cannot prove it predates close -> excluded.
+        write_snapshot(
+            &dir,
+            "20260620_23_01_a.json",
+            20260620,
+            "2026-06-20T06:00:00+00:00",
+            None,
+            "1-2",
+        );
+        assert_eq!(
+            load_predeadline_exacta_odds(&dir, 20260620, 23, 1),
+            PreDeadlineOdds::OnlyPostClose
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_predeadline_naive_timestamp_excluded() {
+        let dir = fixture_dir("naive");
+        // Legacy naive timestamp (no offset) is unparseable as an instant ->
+        // fail-closed exclusion rather than guessing its timezone.
+        write_snapshot(
+            &dir,
+            "20260620_23_01_a.json",
+            20260620,
+            "2026-06-20T06:00:00.123456",
+            Some("15:24"),
+            "1-2",
+        );
+        assert_eq!(
+            load_predeadline_exacta_odds(&dir, 20260620, 23, 1),
+            PreDeadlineOdds::OnlyPostClose
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_predeadline_exacta_ignores_trifecta_files() {
+        let dir = fixture_dir("suffix");
+        // A co-located trifecta snapshot must not satisfy an exacta query, and
+        // vice versa.
+        write_snapshot(
+            &dir,
+            "20260620_23_01_a_3t.json",
+            20260620,
+            "2026-06-20T06:00:00+00:00",
+            Some("15:24"),
+            "1-2-3",
+        );
+        assert_eq!(
+            load_predeadline_exacta_odds(&dir, 20260620, 23, 1),
+            PreDeadlineOdds::NoSnapshots
+        );
+
+        match load_predeadline_trifecta_odds(&dir, 20260620, 23, 1) {
+            PreDeadlineOdds::Selected { odds, .. } => assert_eq!(odds.get(&(1, 2, 3)), Some(&5.6)),
+            other => panic!("expected trifecta Selected, got {other:?}"),
+        }
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

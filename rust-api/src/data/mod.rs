@@ -13,7 +13,10 @@ pub use features::{
     HistoricalFeatures, RacerFeatures, RelativeFeatures, StadiumCourseFeatures,
 };
 pub use history::RacerHistoryIndex;
-pub use odds_loader::{load_exacta_odds, load_trifecta_odds};
+pub use odds_loader::{
+    load_exacta_odds, load_predeadline_exacta_odds, load_predeadline_trifecta_odds,
+    load_trifecta_odds, PreDeadlineOdds,
+};
 pub use parser::{
     flatten_payouts, ParsedRacerEntry, PayoutParser, PayoutRecord, ProgramParser, RaceInfo,
     RacePayouts, RaceResult, ResultParser,
